@@ -1,0 +1,962 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MQTT Client</title>
+    <style>
+        * { box-sizing: border-box; }
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            max-width: 1600px;
+            margin: 0 auto;
+            padding: 20px;
+            background-color: #1e1e1e;
+            color: #d4d4d4;
+        }
+        h1 { color: #569cd6; margin-bottom: 20px; }
+        .container {
+            display: grid;
+            grid-template-columns: 400px 1fr;
+            grid-template-rows: auto auto auto auto 1fr;
+            gap: 15px;
+        }
+        .group {
+            background-color: #2d2d2d;
+            border: 1px solid #3c3c3c;
+            border-radius: 8px;
+            padding: 15px;
+        }
+        /* Grid positioning */
+        #configGroup { grid-column: 1; grid-row: 1; }
+        #connectGroup { grid-column: 1; grid-row: 2; }
+        #statusGroup { grid-column: 1; grid-row: 3; }
+        #subscribedGroup { grid-column: 1; grid-row: 4; }
+        #subscribeGroup { grid-column: 2; grid-row: 1; }
+        #unsubscribeGroup { grid-column: 2; grid-row: 2; }
+        #publishGroup { grid-column: 2; grid-row: 3 / 5; }
+        #logGroup { grid-column: 1 / -1; grid-row: 5; }
+        .group-title {
+            color: #4ec9b0;
+            font-size: 16px;
+            font-weight: bold;
+            margin-bottom: 15px;
+            padding-bottom: 8px;
+            border-bottom: 1px solid #3c3c3c;
+        }
+        .sub-title {
+            color: #dcdcaa;
+            font-size: 13px;
+            font-weight: bold;
+            margin: 15px 0 10px 0;
+            padding-top: 10px;
+            border-top: 1px dashed #3c3c3c;
+        }
+        .form-row {
+            display: flex;
+            align-items: center;
+            margin-bottom: 8px;
+        }
+        .form-row label {
+            width: 140px;
+            min-width: 140px;
+            color: #9cdcfe;
+            font-size: 13px;
+        }
+        .form-row input[type="text"],
+        .form-row input[type="number"],
+        .form-row select,
+        .form-row textarea {
+            flex: 1;
+            padding: 6px 10px;
+            background-color: #3c3c3c;
+            border: 1px solid #555;
+            border-radius: 4px;
+            color: #d4d4d4;
+            font-size: 13px;
+        }
+        .form-row textarea {
+            min-height: 60px;
+            resize: vertical;
+            font-family: 'Courier New', monospace;
+        }
+        .form-row input:focus,
+        .form-row select:focus,
+        .form-row textarea:focus {
+            outline: none;
+            border-color: #0e639c;
+        }
+        .form-row input[type="checkbox"] {
+            width: 16px;
+            height: 16px;
+            cursor: pointer;
+        }
+        .checkbox-label {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            font-size: 13px;
+        }
+        button {
+            background-color: #0e639c;
+            color: white;
+            padding: 8px 16px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 13px;
+            margin-top: 10px;
+            width: 100%;
+        }
+        button:hover { background-color: #1177bb; }
+        button:disabled { background-color: #3c3c3c; cursor: not-allowed; }
+        button.disconnect { background-color: #c53030; }
+        button.disconnect:hover { background-color: #e53e3e; }
+        /* Responsive */
+        @media (max-width: 900px) {
+            .container {
+                grid-template-columns: 1fr;
+                grid-template-rows: auto;
+            }
+            #configGroup, #connectGroup, #subscribeGroup, #statusGroup,
+            #unsubscribeGroup, #subscribedGroup, #publishGroup, #logGroup {
+                grid-column: 1;
+                grid-row: auto;
+            }
+        }
+        /* Status indicator */
+        .status-indicator { display: flex; align-items: center; gap: 10px; }
+        .status-dot {
+            width: 14px; height: 14px; border-radius: 50%;
+            background-color: #c53030; box-shadow: 0 0 6px #c53030;
+        }
+        .status-dot.connected { background-color: #38a169; box-shadow: 0 0 6px #38a169; }
+        .status-text { font-size: 13px; color: #d4d4d4; }
+        /* Received packets log */
+        #receiveLog {
+            background-color: #1e1e1e;
+            border: 1px solid #3c3c3c;
+            border-radius: 4px;
+            padding: 10px;
+            height: 200px;
+            overflow-y: auto;
+            font-family: 'Courier New', monospace;
+            font-size: 12px;
+            line-height: 1.4;
+        }
+        #logGroup { min-height: 250px; }
+        .log-recv { color: #4ec9b0; }
+        .log-send { color: #4fc1ff; }
+        .log-info { color: #dcdcaa; }
+        .log-error { color: #f14c4c; }
+        .timestamp { color: #6a9955; }
+        /* Subscribed topics list */
+        #subscribedList {
+            background-color: #1e1e1e;
+            border: 1px solid #3c3c3c;
+            border-radius: 4px;
+            padding: 8px;
+            min-height: 60px;
+            max-height: 120px;
+            overflow-y: auto;
+        }
+        .subscribed-item {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 4px 6px;
+            background-color: #2d2d2d;
+            border-radius: 4px;
+            margin-bottom: 4px;
+        }
+        .subscribed-item .topic { color: #ce9178; font-size: 12px; }
+        .subscribed-item .qos { color: #b5cea8; font-size: 11px; }
+        .no-subscriptions { color: #6a6a6a; font-style: italic; font-size: 12px; }
+        /* Collapsible sections */
+        .collapsible-header {
+            cursor: pointer;
+            user-select: none;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+        .collapsible-header::before {
+            content: '▶';
+            font-size: 10px;
+            transition: transform 0.2s;
+        }
+        .collapsible-header.open::before {
+            transform: rotate(90deg);
+        }
+        .collapsible-content {
+            display: none;
+            padding-top: 10px;
+        }
+        .collapsible-content.open {
+            display: block;
+        }
+        .hint {
+            color: #6a6a6a;
+            font-size: 11px;
+            margin-left: 140px;
+            margin-top: -4px;
+            margin-bottom: 8px;
+        }
+    </style>
+</head>
+<body>
+    <h1>MQTT Client</h1>
+
+    <div class="container">
+        <!-- Config Group -->
+        <div class="group" id="configGroup">
+            <div class="group-title">Config</div>
+            <div class="form-row">
+                <label>URL:</label>
+                <input type="text" id="url" value="wss://mqtt-broker-tokio.redboltz.net:20443/">
+            </div>
+            <div class="form-row">
+                <label>Version:</label>
+                <select id="mqttVersion">
+                    <option value="5.0" selected>5.0</option>
+                    <option value="3.1.1">3.1.1</option>
+                </select>
+            </div>
+            <div class="form-row">
+                <label>Auto Pub Response:</label>
+                <div class="checkbox-label">
+                    <input type="checkbox" id="autoPubResponse" checked>
+                    <span>Enable</span>
+                </div>
+            </div>
+            <div class="form-row">
+                <label>Auto Ping Response:</label>
+                <div class="checkbox-label">
+                    <input type="checkbox" id="autoPingResponse" checked>
+                    <span>Enable</span>
+                </div>
+            </div>
+            <div class="form-row">
+                <label>Pingreq Interval:</label>
+                <input type="number" id="pingreqSendIntervalMs" placeholder="(disabled)">
+            </div>
+            <div class="hint">milliseconds, empty=disabled</div>
+        </div>
+
+        <!-- Connect Group -->
+        <div class="group" id="connectGroup">
+            <div class="group-title">Connect</div>
+            <div class="form-row">
+                <label>Client ID:</label>
+                <input type="text" id="clientId" placeholder="(auto-generated)">
+            </div>
+            <div class="form-row">
+                <label>Username:</label>
+                <input type="text" id="username" placeholder="(optional)">
+            </div>
+            <div class="form-row">
+                <label>Password:</label>
+                <input type="text" id="password" placeholder="(optional)">
+            </div>
+            <div class="form-row">
+                <label>Keep Alive:</label>
+                <input type="number" id="keepAlive" value="0" min="0">
+            </div>
+            <div class="form-row">
+                <label>Clean Start:</label>
+                <div class="checkbox-label">
+                    <input type="checkbox" id="cleanStart" checked>
+                    <span>Enable</span>
+                </div>
+            </div>
+
+            <!-- Will Settings -->
+            <div class="sub-title collapsible-header" onclick="toggleCollapsible(this)">Will Message</div>
+            <div class="collapsible-content">
+                <div class="form-row">
+                    <label>Will Topic:</label>
+                    <input type="text" id="willTopic" placeholder="(optional)">
+                </div>
+                <div class="form-row">
+                    <label>Will Payload:</label>
+                    <input type="text" id="willPayload" placeholder="(optional)">
+                </div>
+                <div class="form-row">
+                    <label>Will QoS:</label>
+                    <select id="willQos">
+                        <option value="0" selected>0</option>
+                        <option value="1">1</option>
+                        <option value="2">2</option>
+                    </select>
+                </div>
+                <div class="form-row">
+                    <label>Will Retain:</label>
+                    <div class="checkbox-label">
+                        <input type="checkbox" id="willRetain">
+                        <span>Enable</span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Connect Properties (V5.0) -->
+            <div class="sub-title collapsible-header" onclick="toggleCollapsible(this)">Properties (V5.0)</div>
+            <div class="collapsible-content">
+                <div class="form-row">
+                    <label>Session Expiry:</label>
+                    <input type="number" id="connSessionExpiryInterval" placeholder="(optional)">
+                </div>
+                <div class="form-row">
+                    <label>Receive Maximum:</label>
+                    <input type="number" id="connReceiveMaximum" placeholder="(optional)">
+                </div>
+                <div class="form-row">
+                    <label>Max Packet Size:</label>
+                    <input type="number" id="connMaximumPacketSize" placeholder="(optional)">
+                </div>
+                <div class="form-row">
+                    <label>Topic Alias Max:</label>
+                    <input type="number" id="connTopicAliasMaximum" placeholder="(optional)">
+                </div>
+                <div class="form-row">
+                    <label>User Properties:</label>
+                    <textarea id="connUserProperties" placeholder='[{"key":"k1","value":"v1"}]'></textarea>
+                </div>
+            </div>
+
+            <button id="connectBtn">Connect</button>
+        </div>
+
+        <!-- Status Group -->
+        <div class="group" id="statusGroup">
+            <div class="group-title">Status</div>
+            <div class="form-row">
+                <label>Connection:</label>
+                <div class="status-indicator">
+                    <div class="status-dot" id="statusDot"></div>
+                    <span class="status-text" id="statusText">Disconnected</span>
+                </div>
+            </div>
+        </div>
+
+        <!-- Subscribed Topics -->
+        <div class="group" id="subscribedGroup">
+            <div class="group-title">Subscribed Topics</div>
+            <div id="subscribedList">
+                <div class="no-subscriptions">No active subscriptions</div>
+            </div>
+        </div>
+
+        <!-- Subscribe Group -->
+        <div class="group" id="subscribeGroup">
+            <div class="group-title">Subscribe</div>
+            <div class="form-row">
+                <label>Topic:</label>
+                <input type="text" id="subTopic" value="test/#">
+            </div>
+            <div class="form-row">
+                <label>QoS:</label>
+                <select id="subQos">
+                    <option value="0">0 - At most once</option>
+                    <option value="1">1 - At least once</option>
+                    <option value="2" selected>2 - Exactly once</option>
+                </select>
+            </div>
+            <!-- Subscribe Properties (V5.0) -->
+            <div class="sub-title collapsible-header" onclick="toggleCollapsible(this)">Properties (V5.0)</div>
+            <div class="collapsible-content">
+                <div class="form-row">
+                    <label>No Local:</label>
+                    <div class="checkbox-label">
+                        <input type="checkbox" id="subNoLocal">
+                        <span>Enable</span>
+                    </div>
+                </div>
+                <div class="form-row">
+                    <label>Retain As Published:</label>
+                    <div class="checkbox-label">
+                        <input type="checkbox" id="subRetainAsPublished">
+                        <span>Enable</span>
+                    </div>
+                </div>
+                <div class="form-row">
+                    <label>Retain Handling:</label>
+                    <select id="subRetainHandling">
+                        <option value="0" selected>0 - Send retained</option>
+                        <option value="1">1 - Send if new sub</option>
+                        <option value="2">2 - Don't send</option>
+                    </select>
+                </div>
+                <div class="form-row">
+                    <label>Subscription ID:</label>
+                    <input type="number" id="subSubscriptionIdentifier" placeholder="(optional)">
+                </div>
+                <div class="form-row">
+                    <label>User Properties:</label>
+                    <textarea id="subUserProperties" placeholder='[{"key":"k1","value":"v1"}]'></textarea>
+                </div>
+            </div>
+            <button id="subscribeBtn" disabled>Subscribe</button>
+        </div>
+
+        <!-- Unsubscribe Group -->
+        <div class="group" id="unsubscribeGroup">
+            <div class="group-title">Unsubscribe</div>
+            <div class="form-row">
+                <label>Topic:</label>
+                <input type="text" id="unsubTopic" value="test/#">
+            </div>
+            <!-- Unsubscribe Properties (V5.0) -->
+            <div class="sub-title collapsible-header" onclick="toggleCollapsible(this)">Properties (V5.0)</div>
+            <div class="collapsible-content">
+                <div class="form-row">
+                    <label>User Properties:</label>
+                    <textarea id="unsubUserProperties" placeholder='[{"key":"k1","value":"v1"}]'></textarea>
+                </div>
+            </div>
+            <button id="unsubscribeBtn" disabled>Unsubscribe</button>
+        </div>
+
+        <!-- Publish Group -->
+        <div class="group" id="publishGroup">
+            <div class="group-title">Publish</div>
+            <div class="form-row">
+                <label>Topic:</label>
+                <input type="text" id="pubTopic" value="test/hello">
+            </div>
+            <div class="form-row">
+                <label>QoS:</label>
+                <select id="pubQos">
+                    <option value="0">0 - At most once</option>
+                    <option value="1" selected>1 - At least once</option>
+                    <option value="2">2 - Exactly once</option>
+                </select>
+            </div>
+            <div class="form-row">
+                <label>Retain:</label>
+                <div class="checkbox-label">
+                    <input type="checkbox" id="pubRetain">
+                    <span>Enable</span>
+                </div>
+            </div>
+            <div class="form-row">
+                <label>Payload:</label>
+                <input type="text" id="pubPayload" value="Hello MQTT!">
+            </div>
+            <!-- Publish Properties (V5.0) -->
+            <div class="sub-title collapsible-header" onclick="toggleCollapsible(this)">Properties (V5.0)</div>
+            <div class="collapsible-content">
+                <div class="form-row">
+                    <label>Content Type:</label>
+                    <input type="text" id="pubContentType" placeholder="(optional)">
+                </div>
+                <div class="form-row">
+                    <label>Response Topic:</label>
+                    <input type="text" id="pubResponseTopic" placeholder="(optional)">
+                </div>
+                <div class="form-row">
+                    <label>Correlation Data:</label>
+                    <input type="text" id="pubCorrelationData" placeholder="(optional, UTF-8 string)">
+                </div>
+                <div class="form-row">
+                    <label>Message Expiry:</label>
+                    <input type="number" id="pubMessageExpiryInterval" placeholder="(optional)">
+                </div>
+                <div class="form-row">
+                    <label>Topic Alias:</label>
+                    <input type="number" id="pubTopicAlias" placeholder="(optional)">
+                </div>
+                <div class="form-row">
+                    <label>Payload Format:</label>
+                    <select id="pubPayloadFormatIndicator">
+                        <option value="" selected>(default)</option>
+                        <option value="0">0 - Unspecified</option>
+                        <option value="1">1 - UTF-8</option>
+                    </select>
+                </div>
+                <div class="form-row">
+                    <label>User Properties:</label>
+                    <textarea id="pubUserProperties" placeholder='[{"key":"k1","value":"v1"}]'></textarea>
+                </div>
+            </div>
+            <button id="publishBtn" disabled>Publish</button>
+        </div>
+
+        <!-- Received Packets / Log -->
+        <div class="group" id="logGroup">
+            <div class="group-title">Received Packets / Log</div>
+            <div id="receiveLog"></div>
+            <button id="clearLogBtn" style="margin-top: 10px;">Clear Log</button>
+        </div>
+    </div>
+
+    <script>
+        // Toggle collapsible sections
+        function toggleCollapsible(header) {
+            header.classList.toggle('open');
+            const content = header.nextElementSibling;
+            if (content && content.classList.contains('collapsible-content')) {
+                content.classList.toggle('open');
+            }
+        }
+    </script>
+
+    <script type="module">
+        let client = null;
+        let wasmModule = null;
+        let isConnected = false;
+        let recvLoopRunning = false;
+        let subscribedTopics = new Map();
+        let currentVersion = '5.0'; // Track current MQTT version
+
+        // DOM Elements
+        const connectBtn = document.getElementById('connectBtn');
+        const subscribeBtn = document.getElementById('subscribeBtn');
+        const unsubscribeBtn = document.getElementById('unsubscribeBtn');
+        const publishBtn = document.getElementById('publishBtn');
+        const clearLogBtn = document.getElementById('clearLogBtn');
+        const statusDot = document.getElementById('statusDot');
+        const statusText = document.getElementById('statusText');
+        const receiveLog = document.getElementById('receiveLog');
+        const subscribedList = document.getElementById('subscribedList');
+
+        function log(message, type = 'info') {
+            const timestamp = new Date().toLocaleTimeString();
+            const div = document.createElement('div');
+            div.innerHTML = `<span class="timestamp">[${timestamp}]</span> <span class="log-${type}">${escapeHtml(message)}</span>`;
+            receiveLog.appendChild(div);
+            receiveLog.scrollTop = receiveLog.scrollHeight;
+        }
+
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+
+        function updateConnectionStatus(connected) {
+            isConnected = connected;
+            if (connected) {
+                statusDot.classList.add('connected');
+                statusText.textContent = 'Connected';
+                connectBtn.textContent = 'Disconnect';
+                connectBtn.classList.add('disconnect');
+                subscribeBtn.disabled = false;
+                unsubscribeBtn.disabled = false;
+                publishBtn.disabled = false;
+            } else {
+                statusDot.classList.remove('connected');
+                statusText.textContent = 'Disconnected';
+                connectBtn.textContent = 'Connect';
+                connectBtn.classList.remove('disconnect');
+                subscribeBtn.disabled = true;
+                unsubscribeBtn.disabled = true;
+                publishBtn.disabled = true;
+                subscribedTopics.clear();
+                updateSubscribedList();
+            }
+        }
+
+        function updateSubscribedList() {
+            if (subscribedTopics.size === 0) {
+                subscribedList.innerHTML = '<div class="no-subscriptions">No active subscriptions</div>';
+            } else {
+                subscribedList.innerHTML = '';
+                for (const [topic, qos] of subscribedTopics) {
+                    const item = document.createElement('div');
+                    item.className = 'subscribed-item';
+                    item.innerHTML = `<span class="topic">${escapeHtml(topic)}</span><span class="qos">QoS ${qos}</span>`;
+                    subscribedList.appendChild(item);
+                }
+            }
+        }
+
+        // Parse JSON user properties safely
+        function parseUserProperties(text) {
+            if (!text || !text.trim()) return null;
+            try {
+                const arr = JSON.parse(text);
+                if (Array.isArray(arr)) return arr;
+            } catch (e) {
+                log(`Invalid user properties JSON: ${e.message}`, 'error');
+            }
+            return null;
+        }
+
+        // Receive loop
+        async function recvLoop() {
+            if (recvLoopRunning) return;
+            recvLoopRunning = true;
+            const { WasmPacketType } = wasmModule;
+
+            try {
+                while (isConnected && client) {
+                    try {
+                        const packet = await client.recv();
+                        const ptype = packet.packetType();
+
+                        const isV5 = currentVersion === '5.0';
+
+                        switch (ptype) {
+                            case WasmPacketType.Publish: {
+                                const pub = client.asPublish(packet);
+                                log(`PUBLISH: topic="${pub.topicName}", qos=${pub.qos}, retain=${pub.retain}, payload="${pub.payload}"`, 'recv');
+                                break;
+                            }
+                            case WasmPacketType.Puback: {
+                                const puback = client.asPuback(packet);
+                                // V3.1.1 has no reason code in PUBACK
+                                if (isV5) {
+                                    log(`PUBACK: packetId=${puback.packetId}, reasonCode=${puback.reasonCode}`, 'recv');
+                                } else {
+                                    log(`PUBACK: packetId=${puback.packetId}`, 'recv');
+                                }
+                                break;
+                            }
+                            case WasmPacketType.Pubrec: {
+                                const pubrec = client.asPubrec(packet);
+                                // V3.1.1 has no reason code in PUBREC
+                                if (isV5) {
+                                    log(`PUBREC: packetId=${pubrec.packetId}, reasonCode=${pubrec.reasonCode} (auto PUBREL)`, 'recv');
+                                } else {
+                                    log(`PUBREC: packetId=${pubrec.packetId} (auto PUBREL)`, 'recv');
+                                }
+                                break;
+                            }
+                            case WasmPacketType.Pubrel: {
+                                const pubrel = client.asPubrel(packet);
+                                // V3.1.1 has no reason code in PUBREL
+                                if (isV5) {
+                                    log(`PUBREL: packetId=${pubrel.packetId}, reasonCode=${pubrel.reasonCode} (auto PUBCOMP)`, 'recv');
+                                } else {
+                                    log(`PUBREL: packetId=${pubrel.packetId} (auto PUBCOMP)`, 'recv');
+                                }
+                                break;
+                            }
+                            case WasmPacketType.Pubcomp: {
+                                const pubcomp = client.asPubcomp(packet);
+                                // V3.1.1 has no reason code in PUBCOMP
+                                if (isV5) {
+                                    log(`PUBCOMP: packetId=${pubcomp.packetId}, reasonCode=${pubcomp.reasonCode}`, 'recv');
+                                } else {
+                                    log(`PUBCOMP: packetId=${pubcomp.packetId}`, 'recv');
+                                }
+                                break;
+                            }
+                            case WasmPacketType.Suback: {
+                                const suback = client.asSuback(packet);
+                                // V3.1.1 uses returnCodes, V5.0 uses reasonCodes
+                                if (isV5) {
+                                    log(`SUBACK: packetId=${suback.packetId}, reasonCodes=[${suback.reasonCodes()}]`, 'recv');
+                                } else {
+                                    log(`SUBACK: packetId=${suback.packetId}, returnCodes=[${suback.returnCodes()}]`, 'recv');
+                                }
+                                break;
+                            }
+                            case WasmPacketType.Unsuback: {
+                                const unsuback = client.asUnsuback(packet);
+                                // V3.1.1 UNSUBACK has no reason codes (just packet ID)
+                                if (isV5) {
+                                    log(`UNSUBACK: packetId=${unsuback.packetId}, reasonCodes=[${unsuback.reasonCodes()}]`, 'recv');
+                                } else {
+                                    log(`UNSUBACK: packetId=${unsuback.packetId}`, 'recv');
+                                }
+                                break;
+                            }
+                            case WasmPacketType.Pingresp: {
+                                log('PINGRESP received', 'recv');
+                                break;
+                            }
+                            case WasmPacketType.Disconnect: {
+                                const disconnect = client.asDisconnect(packet);
+                                // V3.1.1 broker doesn't send DISCONNECT, but handle if received
+                                if (isV5) {
+                                    log(`DISCONNECT from broker: reasonCode=${disconnect.reasonCode}`, 'recv');
+                                } else {
+                                    log(`DISCONNECT from broker`, 'recv');
+                                }
+                                updateConnectionStatus(false);
+                                break;
+                            }
+                            default:
+                                log(`Received: ${packet.packetTypeString()}`, 'info');
+                        }
+                    } catch (e) {
+                        if (isConnected) {
+                            log(`Receive error: ${e}`, 'error');
+                            updateConnectionStatus(false);
+                        }
+                        break;
+                    }
+                }
+            } finally {
+                recvLoopRunning = false;
+            }
+        }
+
+        // Connect / Disconnect
+        async function handleConnect() {
+            if (isConnected) {
+                try {
+                    const disconnectPacket = client.newDisconnectPacket({ reasonCode: 0 });
+                    await client.send(disconnectPacket);
+                    log('DISCONNECT sent', 'send');
+                } catch (e) {
+                    log(`Disconnect error: ${e}`, 'error');
+                }
+                updateConnectionStatus(false);
+                client = null;
+                return;
+            }
+
+            // Get config values
+            const url = document.getElementById('url').value;
+            const version = document.getElementById('mqttVersion').value;
+            currentVersion = version; // Store for recvLoop
+            const autoPubResponse = document.getElementById('autoPubResponse').checked;
+            const autoPingResponse = document.getElementById('autoPingResponse').checked;
+            const pingreqIntervalText = document.getElementById('pingreqSendIntervalMs').value;
+            const pingreqSendIntervalMs = pingreqIntervalText ? parseInt(pingreqIntervalText) : null;
+
+            // Get connect values
+            const clientId = document.getElementById('clientId').value;
+            const username = document.getElementById('username').value;
+            const password = document.getElementById('password').value;
+            const keepAlive = parseInt(document.getElementById('keepAlive').value) || 0;
+            const cleanStart = document.getElementById('cleanStart').checked;
+
+            // Will settings
+            const willTopic = document.getElementById('willTopic').value;
+            const willPayload = document.getElementById('willPayload').value;
+            const willQos = parseInt(document.getElementById('willQos').value);
+            const willRetain = document.getElementById('willRetain').checked;
+
+            // Connect properties (V5.0)
+            const sessionExpiryText = document.getElementById('connSessionExpiryInterval').value;
+            const receiveMaxText = document.getElementById('connReceiveMaximum').value;
+            const maxPacketSizeText = document.getElementById('connMaximumPacketSize').value;
+            const topicAliasMaxText = document.getElementById('connTopicAliasMaximum').value;
+            const connUserProps = parseUserProperties(document.getElementById('connUserProperties').value);
+
+            try {
+                const { WasmMqttClient, WasmMqttConfig, WasmPacketType } = wasmModule;
+
+                // Create config
+                const configOptions = {
+                    version: version,
+                    autoPubResponse: autoPubResponse,
+                    autoPingResponse: autoPingResponse,
+                };
+                if (pingreqSendIntervalMs !== null) {
+                    configOptions.pingreqSendIntervalMs = pingreqSendIntervalMs;
+                }
+
+                const config = new WasmMqttConfig(configOptions);
+                client = new WasmMqttClient(config);
+                log(`Connecting to ${url}...`, 'info');
+
+                await client.connect(url);
+                log('WebSocket connected', 'info');
+
+                // Build CONNECT packet
+                const connectOptions = {
+                    clientId: clientId,
+                    cleanStart: cleanStart,
+                    cleanSession: cleanStart, // For V3.1.1 compatibility
+                    keepAlive: keepAlive
+                };
+                if (username) connectOptions.userName = username;
+                if (password) connectOptions.password = password;
+
+                // Will
+                if (willTopic) {
+                    connectOptions.willTopic = willTopic;
+                    connectOptions.willPayload = willPayload || '';
+                    connectOptions.willQos = willQos;
+                    connectOptions.willRetain = willRetain;
+                }
+
+                // V5.0 properties
+                if (sessionExpiryText) connectOptions.sessionExpiryInterval = parseInt(sessionExpiryText);
+                if (receiveMaxText) connectOptions.receiveMaximum = parseInt(receiveMaxText);
+                if (maxPacketSizeText) connectOptions.maximumPacketSize = parseInt(maxPacketSizeText);
+                if (topicAliasMaxText) connectOptions.topicAliasMaximum = parseInt(topicAliasMaxText);
+                if (connUserProps) connectOptions.userProperties = connUserProps;
+
+                const connectPacket = client.newConnectPacket(connectOptions);
+                await client.send(connectPacket);
+                log('CONNECT sent', 'send');
+
+                // Wait for CONNACK
+                const connackPacket = await client.recv();
+                if (connackPacket.packetType() === WasmPacketType.Connack) {
+                    const connack = client.asConnack(connackPacket);
+
+                    // V3.1.1 uses returnCode, V5.0 uses reasonCode
+                    const isV5 = version === '5.0';
+                    const code = isV5 ? connack.reasonCode : connack.returnCode;
+                    const codeLabel = isV5 ? 'reasonCode' : 'returnCode';
+                    log(`CONNACK: ${codeLabel}=${code}, sessionPresent=${connack.sessionPresent}`, 'recv');
+
+                    // V5.0 only: Assigned Client Identifier
+                    if (isV5) {
+                        const assignedClientId = connack.assignedClientIdentifier;
+                        if (assignedClientId) {
+                            document.getElementById('clientId').value = assignedClientId;
+                            log(`Assigned Client ID: ${assignedClientId}`, 'info');
+                        }
+                    }
+
+                    if (code === 0) {
+                        updateConnectionStatus(true);
+                        recvLoop();
+                    } else {
+                        log(`Connection refused: ${codeLabel}=${code}`, 'error');
+                        client = null;
+                    }
+                } else {
+                    log(`Unexpected packet: ${connackPacket.packetTypeString()}`, 'error');
+                    client = null;
+                }
+            } catch (e) {
+                log(`Connection error: ${e}`, 'error');
+                client = null;
+            }
+        }
+
+        // Subscribe
+        async function handleSubscribe() {
+            if (!isConnected || !client) return;
+
+            const topic = document.getElementById('subTopic').value;
+            const qos = parseInt(document.getElementById('subQos').value);
+            const noLocal = document.getElementById('subNoLocal').checked;
+            const retainAsPublished = document.getElementById('subRetainAsPublished').checked;
+            const retainHandling = parseInt(document.getElementById('subRetainHandling').value);
+            const subIdText = document.getElementById('subSubscriptionIdentifier').value;
+            const subUserProps = parseUserProperties(document.getElementById('subUserProperties').value);
+
+            try {
+                const packetId = await client.acquirePacketId();
+                const subscribeOptions = {
+                    packetId: packetId,
+                    subscriptions: [{
+                        topic: topic,
+                        qos: qos,
+                        noLocal: noLocal,
+                        retainAsPublished: retainAsPublished,
+                        retainHandling: retainHandling
+                    }]
+                };
+                if (subIdText) subscribeOptions.subscriptionIdentifier = parseInt(subIdText);
+                if (subUserProps) subscribeOptions.userProperties = subUserProps;
+
+                const subscribePacket = client.newSubscribePacket(subscribeOptions);
+                await client.send(subscribePacket);
+                log(`SUBSCRIBE: topic="${topic}", qos=${qos}`, 'send');
+
+                subscribedTopics.set(topic, qos);
+                updateSubscribedList();
+            } catch (e) {
+                log(`Subscribe error: ${e}`, 'error');
+            }
+        }
+
+        // Unsubscribe
+        async function handleUnsubscribe() {
+            if (!isConnected || !client) return;
+
+            const topic = document.getElementById('unsubTopic').value;
+            const unsubUserProps = parseUserProperties(document.getElementById('unsubUserProperties').value);
+
+            try {
+                const packetId = await client.acquirePacketId();
+                const unsubscribeOptions = {
+                    packetId: packetId,
+                    topics: [topic]
+                };
+                if (unsubUserProps) unsubscribeOptions.userProperties = unsubUserProps;
+
+                const unsubscribePacket = client.newUnsubscribePacket(unsubscribeOptions);
+                await client.send(unsubscribePacket);
+                log(`UNSUBSCRIBE: topic="${topic}"`, 'send');
+
+                subscribedTopics.delete(topic);
+                updateSubscribedList();
+            } catch (e) {
+                log(`Unsubscribe error: ${e}`, 'error');
+            }
+        }
+
+        // Publish
+        async function handlePublish() {
+            if (!isConnected || !client) return;
+
+            const topic = document.getElementById('pubTopic').value;
+            const qos = parseInt(document.getElementById('pubQos').value);
+            const retain = document.getElementById('pubRetain').checked;
+            const payload = document.getElementById('pubPayload').value;
+
+            // V5.0 properties
+            const contentType = document.getElementById('pubContentType').value;
+            const responseTopic = document.getElementById('pubResponseTopic').value;
+            const correlationData = document.getElementById('pubCorrelationData').value;
+            const messageExpiryText = document.getElementById('pubMessageExpiryInterval').value;
+            const topicAliasText = document.getElementById('pubTopicAlias').value;
+            const payloadFormatText = document.getElementById('pubPayloadFormatIndicator').value;
+            const pubUserProps = parseUserProperties(document.getElementById('pubUserProperties').value);
+
+            try {
+                const publishOptions = {
+                    topicName: topic,
+                    payload: payload,
+                    qos: qos,
+                    retain: retain
+                };
+
+                if (qos > 0) {
+                    publishOptions.packetId = await client.acquirePacketId();
+                }
+
+                // V5.0 properties
+                if (contentType) publishOptions.contentType = contentType;
+                if (responseTopic) publishOptions.responseTopic = responseTopic;
+                if (correlationData) {
+                    // Convert string to bytes
+                    publishOptions.correlationData = Array.from(new TextEncoder().encode(correlationData));
+                }
+                if (messageExpiryText) publishOptions.messageExpiryInterval = parseInt(messageExpiryText);
+                if (topicAliasText) publishOptions.topicAlias = parseInt(topicAliasText);
+                if (payloadFormatText) publishOptions.payloadFormatIndicator = parseInt(payloadFormatText);
+                if (pubUserProps) publishOptions.userProperties = pubUserProps;
+
+                const publishPacket = client.newPublishPacket(publishOptions);
+                await client.send(publishPacket);
+                log(`PUBLISH: topic="${topic}", qos=${qos}, retain=${retain}, payload="${payload}"`, 'send');
+            } catch (e) {
+                log(`Publish error: ${e}`, 'error');
+            }
+        }
+
+        // Event listeners
+        connectBtn.addEventListener('click', handleConnect);
+        subscribeBtn.addEventListener('click', handleSubscribe);
+        unsubscribeBtn.addEventListener('click', handleUnsubscribe);
+        publishBtn.addEventListener('click', handlePublish);
+        clearLogBtn.addEventListener('click', () => { receiveLog.innerHTML = ''; });
+
+        // Initialize WASM
+        (async function() {
+            try {
+                log('Loading WASM module...', 'info');
+                const module = await import('./pkg/mqtt_client_wasm.js');
+                await module.default();
+                wasmModule = module;
+                log('WASM module loaded. Ready to connect!', 'info');
+            } catch (err) {
+                log(`Failed to load WASM: ${err}`, 'error');
+                console.error('WASM load error:', err);
+            }
+        })();
+    </script>
+</body>
+</html>

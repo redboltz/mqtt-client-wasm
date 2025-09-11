@@ -1,0 +1,396 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MQTT v5.0 WASM Client Test</title>
+    <style>
+        body {
+            font-family: 'Courier New', monospace;
+            max-width: 900px;
+            margin: 0 auto;
+            padding: 20px;
+            background-color: #1e1e1e;
+            color: #d4d4d4;
+        }
+        h1 {
+            color: #569cd6;
+        }
+        .info {
+            background-color: #2d2d2d;
+            padding: 10px;
+            border-radius: 4px;
+            margin-bottom: 20px;
+        }
+        .info strong {
+            color: #4ec9b0;
+        }
+        button {
+            background-color: #0e639c;
+            color: white;
+            padding: 12px 24px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 16px;
+            margin: 10px 5px 10px 0;
+        }
+        button:hover {
+            background-color: #1177bb;
+        }
+        button:disabled {
+            background-color: #3c3c3c;
+            cursor: not-allowed;
+        }
+        #log {
+            border: 1px solid #3c3c3c;
+            padding: 15px;
+            height: 500px;
+            overflow-y: auto;
+            background-color: #1e1e1e;
+            font-size: 13px;
+            line-height: 1.6;
+        }
+        .log-send { color: #4fc1ff; }
+        .log-recv { color: #4ec9b0; }
+        .log-info { color: #dcdcaa; }
+        .log-error { color: #f14c4c; }
+        .log-success { color: #89d185; }
+        .log-step { color: #c586c0; font-weight: bold; }
+        .timestamp { color: #6a9955; }
+    </style>
+</head>
+<body>
+    <h1>MQTT v5.0 WASM Client Test</h1>
+
+    <div class="info">
+        <strong>Broker:</strong> wss://mqtt-broker-tokio.redboltz.net:20443/<br>
+        <strong>Version:</strong> MQTT v5.0<br>
+        <strong>auto_pub_response:</strong> true
+    </div>
+
+    <button id="runTestBtn">Run Full Test</button>
+    <button id="clearLogBtn">Clear Log</button>
+
+    <div id="log"></div>
+
+    <script type="module">
+        const BROKER_URL = 'wss://mqtt-broker-tokio.redboltz.net:20443/';
+        const TEST_TOPIC = 'test/wasm/v5';
+
+        let client = null;
+        let wasmModule = null;
+
+        function log(message, type = 'info') {
+            const logDiv = document.getElementById('log');
+            const timestamp = new Date().toLocaleTimeString();
+            const typeClass = `log-${type}`;
+            logDiv.innerHTML += `<div><span class="timestamp">[${timestamp}]</span> <span class="${typeClass}">${message}</span></div>`;
+            logDiv.scrollTop = logDiv.scrollHeight;
+            console.log(`[${type}] ${message}`);
+        }
+
+        function logStep(step, message) {
+            log(`========== Step ${step}: ${message} ==========`, 'step');
+        }
+
+        async function sleep(ms) {
+            return new Promise(resolve => setTimeout(resolve, ms));
+        }
+
+        function clearLog() {
+            document.getElementById('log').innerHTML = '';
+        }
+
+        async function runFullTest() {
+            if (!wasmModule) {
+                log('WASM module not loaded yet!', 'error');
+                return;
+            }
+
+            const { WasmMqttClient, WasmMqttConfig, WasmPacketType } = wasmModule;
+            const btn = document.getElementById('runTestBtn');
+            btn.disabled = true;
+
+            try {
+
+                // Create client with MQTT v5.0
+                const config = new WasmMqttConfig({
+                    version: '5.0',
+                    pingreqSendIntervalMs: 30000,
+                    autoPubResponse: true,
+                    autoPingResponse: true,
+                    autoMapTopicAliasSend: false,
+                    autoReplaceTopicAliasSend: false,
+                    pingrespRecvTimeoutMs: 10000,
+                    connectionEstablishTimeoutMs: 10000,
+                    shutdownTimeoutMs: 5000
+                });
+
+                client = new WasmMqttClient(config);
+                log('MQTT v5.0 client created', 'success');
+
+                // ========== Step 1: Connect ==========
+                logStep(1, 'CONNECT');
+
+                log(`Connecting to ${BROKER_URL}...`, 'info');
+                await client.connect(BROKER_URL);
+                log('WebSocket connected', 'success');
+
+                const connectPacket = client.newConnectPacket({
+                    clientId: 'mqtt-wasm-test-' + Date.now(),
+                    cleanStart: true,
+                    keepAlive: 60
+                });
+                await client.send(connectPacket);
+                log('CONNECT packet sent', 'send');
+
+                // Wait for CONNACK
+                const connackPacket = await client.recv();
+                if (connackPacket.packetType() === WasmPacketType.Connack) {
+                    const connack = client.asConnack(connackPacket);
+                    log(`CONNACK received - reasonCode: ${connack.reasonCode}, sessionPresent: ${connack.sessionPresent}`, 'recv');
+                } else {
+                    throw new Error(`Expected CONNACK, got ${connackPacket.packetTypeString()}`);
+                }
+
+                // ========== Step 2: Subscribe (QoS 2) ==========
+                logStep(2, 'SUBSCRIBE (QoS 2)');
+
+                const subPacketId = await client.acquirePacketId();
+                const subscribePacket = client.newSubscribePacket({
+                    packetId: subPacketId,
+                    subscriptions: [
+                        { topic: TEST_TOPIC, qos: 2 }
+                    ]
+                });
+                await client.send(subscribePacket);
+                log(`SUBSCRIBE sent - packetId: ${subPacketId}, topic: ${TEST_TOPIC}, QoS: 2`, 'send');
+
+                // Wait for SUBACK
+                const subackPacket = await client.recv();
+                if (subackPacket.packetType() === WasmPacketType.Suback) {
+                    const suback = client.asSuback(subackPacket);
+                    log(`SUBACK received - packetId: ${suback.packetId}, reasonCodes: [${suback.reasonCodes()}]`, 'recv');
+                } else {
+                    throw new Error(`Expected SUBACK, got ${subackPacket.packetTypeString()}`);
+                }
+
+                // ========== Step 3: Publish QoS 0 ==========
+                logStep(3, 'PUBLISH (QoS 0) -> Receive PUBLISH');
+
+                const publishQos0 = client.newPublishPacket({
+                    topicName: TEST_TOPIC,
+                    payload: 'Hello QoS 0!',
+                    qos: 0,
+                    retain: false
+                });
+                await client.send(publishQos0);
+                log('PUBLISH sent - QoS: 0, payload: "Hello QoS 0!"', 'send');
+
+                // Wait for incoming PUBLISH (echo from broker)
+                const recvQos0 = await client.recv();
+                if (recvQos0.packetType() === WasmPacketType.Publish) {
+                    const pub = client.asPublish(recvQos0);
+                    log(`PUBLISH received - QoS: ${pub.qos}, topic: ${pub.topicName}, payload: "${pub.payload}"`, 'recv');
+                } else {
+                    throw new Error(`Expected PUBLISH, got ${recvQos0.packetTypeString()}`);
+                }
+
+                // ========== Step 4: Publish QoS 1 ==========
+                logStep(4, 'PUBLISH (QoS 1) -> PUBACK + Receive PUBLISH (order may vary)');
+
+                const pubQos1PacketId = await client.acquirePacketId();
+                const publishQos1 = client.newPublishPacket({
+                    topicName: TEST_TOPIC,
+                    payload: 'Hello QoS 1!',
+                    qos: 1,
+                    packetId: pubQos1PacketId,
+                    retain: false
+                });
+                await client.send(publishQos1);
+                log(`PUBLISH sent - QoS: 1, packetId: ${pubQos1PacketId}, payload: "Hello QoS 1!"`, 'send');
+
+                // Receive 2 packets: PUBACK and PUBLISH (order may vary)
+                let gotPuback = false;
+                let gotPublishQos1 = false;
+                for (let i = 0; i < 2; i++) {
+                    const packet = await client.recv();
+                    if (packet.packetType() === WasmPacketType.Puback) {
+                        const puback = client.asPuback(packet);
+                        log(`PUBACK received - packetId: ${puback.packetId}, reasonCode: ${puback.reasonCode}`, 'recv');
+                        gotPuback = true;
+                    } else if (packet.packetType() === WasmPacketType.Publish) {
+                        const pub = client.asPublish(packet);
+                        log(`PUBLISH received - QoS: ${pub.qos}, topic: ${pub.topicName}, payload: "${pub.payload}"`, 'recv');
+                        gotPublishQos1 = true;
+                    } else {
+                        log(`Unexpected packet: ${packet.packetTypeString()}`, 'info');
+                    }
+                }
+                if (!gotPuback || !gotPublishQos1) {
+                    log(`Warning: Expected PUBACK and PUBLISH, got puback=${gotPuback}, publish=${gotPublishQos1}`, 'error');
+                }
+
+                // ========== Step 5: Publish QoS 2 ==========
+                logStep(5, 'PUBLISH (QoS 2) - Full QoS 2 flow (send + receive)');
+                log('Send flow: PUBLISH -> PUBREC -> PUBREL -> PUBCOMP', 'info');
+                log('Recv flow: PUBLISH -> PUBREC(auto) -> PUBREL -> PUBCOMP(auto)', 'info');
+
+                const pubQos2PacketId = await client.acquirePacketId();
+                const publishQos2 = client.newPublishPacket({
+                    topicName: TEST_TOPIC,
+                    payload: 'Hello QoS 2!',
+                    qos: 2,
+                    packetId: pubQos2PacketId,
+                    retain: false
+                });
+                await client.send(publishQos2);
+                log(`PUBLISH sent - QoS: 2, packetId: ${pubQos2PacketId}, payload: "Hello QoS 2!"`, 'send');
+
+                // QoS 2 flow with auto_pub_response=true:
+                // 1. Client sends PUBLISH QoS2
+                // 2.A (recv side): PUBLISH recv -> (auto PUBREC) -> PUBREL recv -> (auto PUBCOMP)
+                // 2.B (send side): PUBREC recv -> (auto PUBREL) -> PUBCOMP recv
+                // A and B are unordered, but within each: order is preserved
+                // Loop exits when BOTH Pubrel recv AND Pubcomp recv are done
+                // NOTE: auto_pub_response handles all response sending automatically!
+                let gotPubrelFromBroker = false;      // 2.A completion: PUBREL for broker's echo
+                let gotPubcompForOurPublish = false;  // 2.B completion: PUBCOMP for our pubQos2PacketId
+                let receivedCount = 0;
+
+                // Keep receiving until BOTH flows complete (no manual sends needed!)
+                while (!(gotPubrelFromBroker && gotPubcompForOurPublish) && receivedCount < 10) {
+                    receivedCount++;
+                    const packet = await client.recv();
+                    const ptype = packet.packetType();
+
+                    if (ptype === WasmPacketType.Pubrec) {
+                        const pubrec = client.asPubrec(packet);
+                        log(`PUBREC received - packetId: ${pubrec.packetId}, reasonCode: ${pubrec.reasonCode}`, 'recv');
+                        log('(auto_pub_response will send PUBREL)', 'info');
+                    } else if (ptype === WasmPacketType.Publish) {
+                        const pub = client.asPublish(packet);
+                        log(`PUBLISH received - QoS: ${pub.qos}, packetId: ${pub.packetId}, topic: ${pub.topicName}, payload: "${pub.payload}"`, 'recv');
+                        log('(auto_pub_response will send PUBREC)', 'info');
+                    } else if (ptype === WasmPacketType.Pubrel) {
+                        const pubrel = client.asPubrel(packet);
+                        log(`PUBREL received - packetId: ${pubrel.packetId}, reasonCode: ${pubrel.reasonCode}`, 'recv');
+                        log('(auto_pub_response will send PUBCOMP)', 'info');
+                        gotPubrelFromBroker = true;  // 2.A complete
+                        log('2.A complete: Broker echo QoS2 recv flow done', 'success');
+                    } else if (ptype === WasmPacketType.Pubcomp) {
+                        const pubcomp = client.asPubcomp(packet);
+                        log(`PUBCOMP received - packetId: ${pubcomp.packetId}, reasonCode: ${pubcomp.reasonCode}`, 'recv');
+                        if (pubcomp.packetId === pubQos2PacketId) {
+                            gotPubcompForOurPublish = true;  // 2.B complete
+                            log('2.B complete: Our QoS2 send flow done', 'success');
+                        }
+                    } else {
+                        log(`Other packet received: ${packet.packetTypeString()}`, 'info');
+                    }
+                }
+
+                log(`QoS 2 flow completed - received ${receivedCount} packets`, 'success');
+                if (!gotPubrelFromBroker || !gotPubcompForOurPublish) {
+                    throw new Error(`QoS 2 flow incomplete: pubrel=${gotPubrelFromBroker}, pubcomp=${gotPubcompForOurPublish}`);
+                }
+
+                // ========== Step 6: Unsubscribe ==========
+                logStep(6, 'UNSUBSCRIBE -> UNSUBACK');
+
+                // Check connection state
+                const isConn = await client.isConnected();
+                log(`Connection state before UNSUBSCRIBE: ${isConn}`, 'info');
+
+                const unsubPacketId = await client.acquirePacketId();
+                log(`Acquired packetId for UNSUBSCRIBE: ${unsubPacketId}`, 'info');
+
+                const unsubscribePacket = client.newUnsubscribePacket({
+                    packetId: unsubPacketId,
+                    topics: [TEST_TOPIC]
+                });
+                await client.send(unsubscribePacket);
+                log(`UNSUBSCRIBE sent - packetId: ${unsubPacketId}, topic: ${TEST_TOPIC}`, 'send');
+
+                // Wait for UNSUBACK (may need to skip late QoS2 packets)
+                log('Waiting for UNSUBACK...', 'info');
+                let gotUnsuback = false;
+                let unsubackAttempts = 0;
+                while (!gotUnsuback && unsubackAttempts < 5) {
+                    unsubackAttempts++;
+                    const packet = await client.recv();
+                    const ptype = packet.packetType();
+
+                    if (ptype === WasmPacketType.Unsuback) {
+                        const unsuback = client.asUnsuback(packet);
+                        log(`UNSUBACK received - packetId: ${unsuback.packetId}, reasonCodes: [${unsuback.reasonCodes()}]`, 'recv');
+                        gotUnsuback = true;
+                    } else if (ptype === WasmPacketType.Pubcomp) {
+                        const pubcomp = client.asPubcomp(packet);
+                        log(`Late PUBCOMP received (skipping) - packetId: ${pubcomp.packetId}`, 'recv');
+                    } else if (ptype === WasmPacketType.Pubrel) {
+                        const pubrel = client.asPubrel(packet);
+                        log(`Late PUBREL received (skipping) - packetId: ${pubrel.packetId}`, 'recv');
+                    } else if (ptype === WasmPacketType.Pingresp) {
+                        log('PINGRESP received (skipping)', 'recv');
+                    } else {
+                        log(`Unexpected packet while waiting for UNSUBACK: ${packet.packetTypeString()}`, 'info');
+                    }
+                }
+                if (!gotUnsuback) {
+                    throw new Error('Failed to receive UNSUBACK after multiple attempts');
+                }
+
+                // ========== Step 7: Disconnect ==========
+                logStep(7, 'DISCONNECT -> CLOSE');
+
+                const disconnectPacket = client.newDisconnectPacket({
+                    reasonCode: 0  // Normal disconnection
+                });
+                await client.send(disconnectPacket);
+                log('DISCONNECT sent - reasonCode: 0 (Normal disconnection)', 'send');
+
+                // ========== Done ==========
+                log('==========================================', 'step');
+                log('All tests completed successfully!', 'success');
+                log('==========================================', 'step');
+
+            } catch (error) {
+                log(`ERROR: ${error}`, 'error');
+                console.error(error);
+
+                // Try to close on error
+                if (client) {
+                    try {
+                        await client.close();
+                    } catch (e) {
+                        // Ignore close errors
+                    }
+                }
+            } finally {
+                btn.disabled = false;
+            }
+        }
+
+        // Set up event listeners immediately
+        document.getElementById('runTestBtn').addEventListener('click', runFullTest);
+        document.getElementById('clearLogBtn').addEventListener('click', clearLog);
+        console.log('Event listeners attached');
+
+        // Initialize WASM on page load
+        (async function() {
+            try {
+                log('Loading WASM module...', 'info');
+                const module = await import('./pkg/mqtt_client_wasm.js');
+                await module.default();  // Call init()
+                wasmModule = module;
+                log('WASM module loaded. Ready to run test!', 'success');
+            } catch (err) {
+                log(`Failed to load WASM: ${err}`, 'error');
+                console.error('WASM load error:', err);
+            }
+        })();
+    </script>
+</body>
+</html>

@@ -1,0 +1,67 @@
+[package]
+name = "mqtt-client-wasm"
+version = "0.1.0"
+edition = "2021"
+description = "MQTT client for WASM using WebSocket transport"
+license = "MIT"
+repository = "https://github.com/username/mqtt-client-wasm"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+# WebSocket communication (WASM-only, true async)
+# ewebsock = { version = "0.8", features = ["tokio"] }  # Removed: not truly async in WASM
+
+# MQTT protocol core
+mqtt-protocol-core = "0.7"
+
+# Serialization for MQTT packets
+bytes = "1.0"
+
+# Async runtime and utilities
+futures = "0.3"
+async-trait = "0.1"
+tokio = { version = "1.0", features = ["sync", "time"], optional = true }
+
+# WASM bindings
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+js-sys = "0.3"
+serde = { version = "1.0", features = ["derive"] }
+serde-wasm-bindgen = "0.6"
+
+# Error handling
+thiserror = "1.0"
+anyhow = "1.0"
+
+# Logging
+log = "0.4"
+console_error_panic_hook = "0.1"
+
+[dependencies.web-sys]
+version = "0.3"
+features = [
+    "console",
+    "WebSocket",
+    "MessageEvent",
+    "CloseEvent",
+    "ErrorEvent",
+    "BinaryType",
+    "Event",
+    "EventTarget",
+    "Window",
+]
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+tokio = { version = "1.0", features = ["full"] }
+
+[dev-dependencies]
+wasm-bindgen-test = "0.3"
+
+[features]
+default = []
+native = ["tokio"]
+
+[package.metadata.wasm-pack.profile.release]
+wasm-opt = ["-Oz", "--enable-mutable-globals"]
