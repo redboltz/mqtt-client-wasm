@@ -1,0 +1,14 @@
+# Development and build files
+target/
+www/
+tests/
+src/
+Cargo.toml
+Cargo.lock
+*.rs
+.github/
+tarpaulin-report.html
+check.sh
+
+# Node.js test files (not needed for users)
+nodejs/test/

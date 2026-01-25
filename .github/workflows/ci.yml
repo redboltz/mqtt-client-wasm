@@ -198,6 +198,9 @@ jobs:
       - name: Run Node.js timer tests
         run: node nodejs/test/timer.test.js
 
+      - name: Run Node.js transport integration tests
+        run: node nodejs/test/transport-integration.test.js
+
   build-wasm:
     name: Build WASM Package
     runs-on: ubuntu-latest

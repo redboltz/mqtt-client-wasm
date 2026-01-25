@@ -48,7 +48,7 @@
   "files": [
     "pkg/",
     "pkg-nodejs/",
-    "nodejs/"
+    "nodejs/*.js"
   ],
   "peerDependencies": {
     "ws": "^8.19.0"
