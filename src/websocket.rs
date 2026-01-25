@@ -1,4 +1,7 @@
-//! WebSocket abstraction layer for testability
+//! Underlying layer abstraction for testability
+//!
+//! This module provides an abstraction over the underlying transport layer
+//! (WebSocket, TCP, TLS, etc.) for testability and flexibility.
 
 use async_trait::async_trait;
 use futures::channel::{mpsc, oneshot};
@@ -7,59 +10,73 @@ use futures::channel::{mpsc, oneshot};
 pub type ConnectReplySender =
     std::sync::Arc<std::sync::Mutex<Option<oneshot::Sender<Result<(), crate::error::Error>>>>>;
 
-/// WebSocket events
+/// Underlying layer events (sent FROM transport TO message loop)
 #[derive(Debug, Clone)]
-pub enum WebSocketEvent {
+pub enum UnderlyingLayerEvent {
     Connected,
     Message(Vec<u8>),
     Error(String),
     Closed,
-}
-
-/// WebSocket commands (sent TO the WebSocket from message loop)
-#[derive(Debug, Clone)]
-pub enum WebSocketCommand {
-    Connect(String, ConnectReplySender),
-    SendData(Vec<u8>),
-    Close,
+    /// Timer expired event
+    /// The String is the timer kind (e.g., "PingreqSend")
     TimerExpired(String),
 }
 
-/// Abstract WebSocket interface for testing (pure message-passing)
+/// Underlying layer commands (sent TO transport FROM message loop)
+#[derive(Debug, Clone)]
+pub enum UnderlyingLayerCommand {
+    Connect(String, ConnectReplySender),
+    SendData(Vec<u8>),
+    Close,
+    /// Start or reset a timer
+    /// When the timer expires, the underlying layer should send TimerExpired event
+    TimerReset {
+        kind: String,
+        duration_ms: u64,
+    },
+    /// Cancel a timer
+    TimerCancel {
+        kind: String,
+    },
+}
+
+/// Abstract underlying layer interface for testing (pure message-passing)
 #[async_trait(?Send)]
 #[cfg(target_arch = "wasm32")]
-pub trait WebSocketInterface {
-    /// Get event receiver (events FROM WebSocket TO message loop)
-    fn event_receiver(&mut self) -> mpsc::UnboundedReceiver<WebSocketEvent>;
+pub trait UnderlyingLayerInterface {
+    /// Get event receiver (events FROM transport TO message loop)
+    fn event_receiver(&mut self) -> mpsc::UnboundedReceiver<UnderlyingLayerEvent>;
 
-    /// Get command sender (commands TO WebSocket FROM message loop)
-    fn command_sender(&self) -> mpsc::UnboundedSender<WebSocketCommand>;
+    /// Get command sender (commands TO transport FROM message loop)
+    fn command_sender(&self) -> mpsc::UnboundedSender<UnderlyingLayerCommand>;
 
-    /// Start the WebSocket processor (handles commands and generates events)
+    /// Start the transport processor (handles commands and generates events)
     async fn run(&mut self);
 }
 
-/// Abstract WebSocket interface for testing (pure message-passing)
+/// Abstract underlying layer interface for testing (pure message-passing)
 #[async_trait(?Send)]
 #[cfg(not(target_arch = "wasm32"))]
-pub trait WebSocketInterface: Send {
-    /// Get event receiver (events FROM WebSocket TO message loop)
-    fn event_receiver(&mut self) -> mpsc::UnboundedReceiver<WebSocketEvent>;
+pub trait UnderlyingLayerInterface: Send {
+    /// Get event receiver (events FROM transport TO message loop)
+    fn event_receiver(&mut self) -> mpsc::UnboundedReceiver<UnderlyingLayerEvent>;
 
-    /// Get command sender (commands TO WebSocket FROM message loop)
-    fn command_sender(&self) -> mpsc::UnboundedSender<WebSocketCommand>;
+    /// Get command sender (commands TO transport FROM message loop)
+    fn command_sender(&self) -> mpsc::UnboundedSender<UnderlyingLayerCommand>;
 
-    /// Start the WebSocket processor (handles commands and generates events)
+    /// Start the transport processor (handles commands and generates events)
     async fn run(&mut self);
 }
 
 /// Browser WebSocket implementation (pure message-passing)
 #[cfg(target_arch = "wasm32")]
 pub struct BrowserWebSocket {
-    event_sender: mpsc::UnboundedSender<WebSocketEvent>,
-    event_receiver: Option<mpsc::UnboundedReceiver<WebSocketEvent>>,
-    command_sender: mpsc::UnboundedSender<WebSocketCommand>,
-    command_receiver: mpsc::UnboundedReceiver<WebSocketCommand>,
+    event_sender: mpsc::UnboundedSender<UnderlyingLayerEvent>,
+    event_receiver: Option<mpsc::UnboundedReceiver<UnderlyingLayerEvent>>,
+    command_sender: mpsc::UnboundedSender<UnderlyingLayerCommand>,
+    command_receiver: mpsc::UnboundedReceiver<UnderlyingLayerCommand>,
+    /// Active timers: kind -> timer_id
+    active_timers: std::collections::HashMap<String, i32>,
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -73,21 +90,22 @@ impl BrowserWebSocket {
             event_receiver: Some(event_receiver),
             command_sender,
             command_receiver,
+            active_timers: std::collections::HashMap::new(),
         }
     }
 }
 
 #[cfg(target_arch = "wasm32")]
 #[async_trait(?Send)]
-impl WebSocketInterface for BrowserWebSocket {
-    fn event_receiver(&mut self) -> mpsc::UnboundedReceiver<WebSocketEvent> {
+impl UnderlyingLayerInterface for BrowserWebSocket {
+    fn event_receiver(&mut self) -> mpsc::UnboundedReceiver<UnderlyingLayerEvent> {
         self.event_receiver.take().unwrap_or_else(|| {
             let (_, receiver) = mpsc::unbounded();
             receiver
         })
     }
 
-    fn command_sender(&self) -> mpsc::UnboundedSender<WebSocketCommand> {
+    fn command_sender(&self) -> mpsc::UnboundedSender<UnderlyingLayerCommand> {
         self.command_sender.clone()
     }
 
@@ -112,7 +130,7 @@ impl WebSocketInterface for BrowserWebSocket {
                 &format!("WebSocket processor received command: {:?}", command).into(),
             );
             match command {
-                WebSocketCommand::Connect(url, reply_arc) => {
+                UnderlyingLayerCommand::Connect(url, reply_arc) => {
                     web_sys::console::log_1(&format!("WebSocket connecting to: {}", url).into());
                     web_sys::console::log_1(&"✅ Received Connect command with reply_arc".into());
 
@@ -166,7 +184,9 @@ impl WebSocketInterface for BrowserWebSocket {
                                     }
                                 }
 
-                                match event_sender_clone.unbounded_send(WebSocketEvent::Connected) {
+                                match event_sender_clone
+                                    .unbounded_send(UnderlyingLayerEvent::Connected)
+                                {
                                     Ok(_) => web_sys::console::log_1(
                                         &"Sent Connected event successfully".into(),
                                     ),
@@ -202,7 +222,7 @@ impl WebSocketInterface for BrowserWebSocket {
                                         &format!("Received {} bytes", data.len()).into(),
                                     );
                                     match event_sender_clone
-                                        .unbounded_send(WebSocketEvent::Message(data))
+                                        .unbounded_send(UnderlyingLayerEvent::Message(data))
                                     {
                                         Ok(_) => web_sys::console::log_1(
                                             &"Sent Message event successfully".into(),
@@ -245,7 +265,7 @@ impl WebSocketInterface for BrowserWebSocket {
                                     "Unknown WebSocket error".to_string()
                                 };
                                 let _ = event_sender_clone
-                                    .unbounded_send(WebSocketEvent::Error(error_msg));
+                                    .unbounded_send(UnderlyingLayerEvent::Error(error_msg));
                             })
                                 as Box<dyn FnMut(JsValue)>);
                             ws.set_onerror(Some(onerror.as_ref().unchecked_ref()));
@@ -271,7 +291,8 @@ impl WebSocketInterface for BrowserWebSocket {
                                     );
                                 }
 
-                                let _ = event_sender_clone.unbounded_send(WebSocketEvent::Closed);
+                                let _ =
+                                    event_sender_clone.unbounded_send(UnderlyingLayerEvent::Closed);
                             })
                                 as Box<dyn FnMut(JsValue)>);
                             ws.set_onclose(Some(onclose.as_ref().unchecked_ref()));
@@ -280,16 +301,16 @@ impl WebSocketInterface for BrowserWebSocket {
                             websocket = Some(ws);
                         }
                         Err(e) => {
-                            let _ =
-                                self.event_sender
-                                    .unbounded_send(WebSocketEvent::Error(format!(
-                                        "Failed to create WebSocket: {:?}",
-                                        e
-                                    )));
+                            let _ = self
+                                .event_sender
+                                .unbounded_send(UnderlyingLayerEvent::Error(format!(
+                                    "Failed to create WebSocket: {:?}",
+                                    e
+                                )));
                         }
                     }
                 }
-                WebSocketCommand::SendData(data) => {
+                UnderlyingLayerCommand::SendData(data) => {
                     web_sys::console::log_1(
                         &format!("WebSocket SendData command: {} bytes", data.len()).into(),
                     );
@@ -307,19 +328,24 @@ impl WebSocketInterface for BrowserWebSocket {
                                 web_sys::console::log_1(
                                     &format!("WebSocket send_with_u8_array failed: {:?}", e).into(),
                                 );
-                                let _ = self.event_sender.unbounded_send(WebSocketEvent::Error(
-                                    format!("Send failed: {:?}", e),
-                                ));
+                                let _ =
+                                    self.event_sender
+                                        .unbounded_send(UnderlyingLayerEvent::Error(format!(
+                                            "Send failed: {:?}",
+                                            e
+                                        )));
                             }
                         }
                     } else {
                         web_sys::console::log_1(&"WebSocket not available for sending".into());
-                        let _ = self.event_sender.unbounded_send(WebSocketEvent::Error(
-                            "WebSocket not connected".to_string(),
-                        ));
+                        let _ = self
+                            .event_sender
+                            .unbounded_send(UnderlyingLayerEvent::Error(
+                                "WebSocket not connected".to_string(),
+                            ));
                     }
                 }
-                WebSocketCommand::Close => {
+                UnderlyingLayerCommand::Close => {
                     // Clear closures first to prevent further callbacks
                     _closures.clear();
 
@@ -332,15 +358,54 @@ impl WebSocketInterface for BrowserWebSocket {
                         let _ = ws.close();
                     }
 
-                    let _ = self.event_sender.unbounded_send(WebSocketEvent::Closed);
+                    let _ = self
+                        .event_sender
+                        .unbounded_send(UnderlyingLayerEvent::Closed);
                     // Do NOT break - allow reconnection by continuing to process commands
                 }
-                WebSocketCommand::TimerExpired(timer_kind) => {
-                    // Timer expired events will be handled by main processor
+                UnderlyingLayerCommand::TimerReset { kind, duration_ms } => {
+                    // Cancel existing timer if any
+                    if let Some(old_timer_id) = self.active_timers.remove(&kind) {
+                        web_sys::console::log_1(
+                            &format!("Cancelling existing timer {} (ID: {})", kind, old_timer_id)
+                                .into(),
+                        );
+                        crate::platform::clear_timeout(old_timer_id);
+                    }
+
+                    // Create new timer
+                    let event_sender = self.event_sender.clone();
+                    let timer_kind = kind.clone();
+                    let callback = wasm_bindgen::closure::Closure::wrap(Box::new(move || {
+                        web_sys::console::log_1(&format!("Timer expired: {}", timer_kind).into());
+                        let _ = event_sender
+                            .unbounded_send(UnderlyingLayerEvent::TimerExpired(timer_kind.clone()));
+                    })
+                        as Box<dyn Fn()>);
+
+                    let timer_id = crate::platform::set_timeout(&callback, duration_ms as i32);
+                    callback.forget();
+
+                    self.active_timers.insert(kind.clone(), timer_id);
                     web_sys::console::log_1(
-                        &format!("WebSocket processor received timer expired: {}", timer_kind)
-                            .into(),
+                        &format!(
+                            "Timer set: {} (ID: {}) for {}ms",
+                            kind, timer_id, duration_ms
+                        )
+                        .into(),
                     );
+                }
+                UnderlyingLayerCommand::TimerCancel { kind } => {
+                    if let Some(timer_id) = self.active_timers.remove(&kind) {
+                        web_sys::console::log_1(
+                            &format!("Timer cancelled: {} (ID: {})", kind, timer_id).into(),
+                        );
+                        crate::platform::clear_timeout(timer_id);
+                    } else {
+                        web_sys::console::log_1(
+                            &format!("Timer cancel requested but not active: {}", kind).into(),
+                        );
+                    }
                 }
             }
         }

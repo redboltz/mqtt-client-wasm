@@ -18,7 +18,7 @@ mod wasm_interface;
 pub use client::MqttClient;
 pub use error::{Error, Result};
 pub use types::*;
-pub use websocket::{WebSocketCommand, WebSocketEvent, WebSocketInterface};
+pub use websocket::{UnderlyingLayerCommand, UnderlyingLayerEvent, UnderlyingLayerInterface};
 
 // WASM-specific exports - export the clean client implementation
 #[cfg(target_arch = "wasm32")]

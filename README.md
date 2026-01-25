@@ -635,7 +635,7 @@ wasm-pack build --target bundler
 ### Run Tests
 
 ```bash
-# Native tests (mock WebSocket)
+# Native tests (mock underlying layer)
 cargo test --features native
 
 # WASM tests

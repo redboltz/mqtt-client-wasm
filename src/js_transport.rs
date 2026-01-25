@@ -1,10 +1,12 @@
 //! JavaScript Transport Bridge
 //!
 //! This module provides a bridge between JavaScript transports (TCP, TLS, WebSocket)
-//! and the Rust WASM client. It implements WebSocketInterface so that any JavaScript
+//! and the Rust WASM client. It implements UnderlyingLayerInterface so that any JavaScript
 //! transport can be used with the MqttClient's state machine and timers.
 
-use crate::websocket::{ConnectReplySender, WebSocketCommand, WebSocketEvent, WebSocketInterface};
+use crate::websocket::{
+    ConnectReplySender, UnderlyingLayerCommand, UnderlyingLayerEvent, UnderlyingLayerInterface,
+};
 use async_trait::async_trait;
 use futures::channel::mpsc;
 use futures::stream::StreamExt;
@@ -35,18 +37,18 @@ extern "C" {
 /// Shared state for JavaScript transport bridge
 /// This is wrapped in Rc<RefCell<>> so it can be shared between the WASM side and JavaScript side
 struct SharedTransportState {
-    event_sender: mpsc::UnboundedSender<WebSocketEvent>,
+    event_sender: mpsc::UnboundedSender<UnderlyingLayerEvent>,
     js_callbacks: Option<JsTransportCallbacks>,
     connect_reply: Option<ConnectReplySender>,
 }
 
-/// Transport handle that implements WebSocketInterface
+/// Transport handle that implements UnderlyingLayerInterface
 /// This is the part that gets used by MqttClient internally
 pub struct JsTransportHandle {
     shared: Rc<RefCell<SharedTransportState>>,
-    event_receiver: Option<mpsc::UnboundedReceiver<WebSocketEvent>>,
-    command_sender: mpsc::UnboundedSender<WebSocketCommand>,
-    command_receiver: Option<mpsc::UnboundedReceiver<WebSocketCommand>>,
+    event_receiver: Option<mpsc::UnboundedReceiver<UnderlyingLayerEvent>>,
+    command_sender: mpsc::UnboundedSender<UnderlyingLayerCommand>,
+    command_receiver: Option<mpsc::UnboundedReceiver<UnderlyingLayerCommand>>,
 }
 
 impl JsTransportHandle {
@@ -67,15 +69,15 @@ impl JsTransportHandle {
 }
 
 #[async_trait(?Send)]
-impl WebSocketInterface for JsTransportHandle {
-    fn event_receiver(&mut self) -> mpsc::UnboundedReceiver<WebSocketEvent> {
+impl UnderlyingLayerInterface for JsTransportHandle {
+    fn event_receiver(&mut self) -> mpsc::UnboundedReceiver<UnderlyingLayerEvent> {
         self.event_receiver.take().unwrap_or_else(|| {
             let (_, receiver) = mpsc::unbounded();
             receiver
         })
     }
 
-    fn command_sender(&self) -> mpsc::UnboundedSender<WebSocketCommand> {
+    fn command_sender(&self) -> mpsc::UnboundedSender<UnderlyingLayerCommand> {
         self.command_sender.clone()
     }
 
@@ -88,26 +90,33 @@ impl WebSocketInterface for JsTransportHandle {
 
         while let Some(command) = command_receiver.next().await {
             match command {
-                WebSocketCommand::Connect(_url, reply_arc) => {
+                UnderlyingLayerCommand::Connect(_url, reply_arc) => {
                     // Store the reply for when JavaScript calls notifyConnected
                     shared.borrow_mut().connect_reply = Some(reply_arc);
                 }
-                WebSocketCommand::SendData(data) => {
+                UnderlyingLayerCommand::SendData(data) => {
                     let shared_borrowed = shared.borrow();
                     if let Some(ref callbacks) = shared_borrowed.js_callbacks {
                         callbacks.on_send(&data);
                     }
                 }
-                WebSocketCommand::Close => {
+                UnderlyingLayerCommand::Close => {
                     let shared_borrowed = shared.borrow();
                     if let Some(ref callbacks) = shared_borrowed.js_callbacks {
                         callbacks.on_close();
                     }
                 }
-                WebSocketCommand::TimerExpired(timer_kind) => {
+                UnderlyingLayerCommand::TimerReset { kind, duration_ms } => {
+                    // Timer handling for JsTransport should be done in JavaScript
+                    // For now, just log the request
                     web_sys::console::log_1(
-                        &format!("JsTransport: timer expired: {}", timer_kind).into(),
+                        &format!("JsTransport: TimerReset {} for {}ms", kind, duration_ms).into(),
                     );
+                }
+                UnderlyingLayerCommand::TimerCancel { kind } => {
+                    // Timer handling for JsTransport should be done in JavaScript
+                    // For now, just log the request
+                    web_sys::console::log_1(&format!("JsTransport: TimerCancel {}", kind).into());
                 }
             }
         }
@@ -116,7 +125,7 @@ impl WebSocketInterface for JsTransportHandle {
 
 /// JavaScript Transport Bridge
 ///
-/// This struct bridges JavaScript transport implementations to the Rust WebSocketInterface.
+/// This struct bridges JavaScript transport implementations to the Rust UnderlyingLayerInterface.
 /// It allows Node.js transports (TCP, TLS, WebSocket) to integrate with the WASM client's
 /// state machine, timers, and automatic packet handling.
 ///
@@ -170,7 +179,7 @@ impl JsTransport {
 
         let _ = shared
             .event_sender
-            .unbounded_send(WebSocketEvent::Connected);
+            .unbounded_send(UnderlyingLayerEvent::Connected);
     }
 
     /// Called by JavaScript when data is received from the transport
@@ -179,7 +188,7 @@ impl JsTransport {
         let shared = self.shared.borrow();
         let _ = shared
             .event_sender
-            .unbounded_send(WebSocketEvent::Message(data.to_vec()));
+            .unbounded_send(UnderlyingLayerEvent::Message(data.to_vec()));
     }
 
     /// Called by JavaScript when an error occurs
@@ -198,14 +207,16 @@ impl JsTransport {
 
         let _ = shared
             .event_sender
-            .unbounded_send(WebSocketEvent::Error(error.to_string()));
+            .unbounded_send(UnderlyingLayerEvent::Error(error.to_string()));
     }
 
     /// Called by JavaScript when the transport is closed
     #[wasm_bindgen(js_name = notifyClosed)]
     pub fn notify_closed(&self) {
         let shared = self.shared.borrow();
-        let _ = shared.event_sender.unbounded_send(WebSocketEvent::Closed);
+        let _ = shared
+            .event_sender
+            .unbounded_send(UnderlyingLayerEvent::Closed);
     }
 }
 
