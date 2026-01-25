@@ -1566,3 +1566,62 @@ async fn test_timer_expiration() {
     // The client should still be connected
     assert!(client.is_connected().await);
 }
+
+/// Test PingrespRecv timeout
+/// This exercises the PingrespRecv timer expiration code path
+#[tokio::test]
+async fn test_pingresp_recv_timeout() {
+    let config = MqttConfig {
+        version: client_mqtt::Version::V3_1_1,
+        // Set pingreq interval longer than pingresp timeout
+        // so PingrespRecv timer can fire before next PingreqSend
+        pingreq_send_interval_ms: Some(100),
+        // Set a short pingresp timeout
+        pingresp_recv_timeout_ms: 30,
+        ..Default::default()
+    };
+    let mock_ws = MockUnderlyingLayer::new();
+    let event_sender = mock_ws.event_sender.clone();
+
+    let client = MqttClient::new_with_websocket(config, mock_ws);
+
+    // Connect
+    let _ = client.connect("ws://test.example.com").await;
+    tokio::time::sleep(tokio::time::Duration::from_millis(20)).await;
+
+    // Send CONNECT with keep_alive
+    let connect_packet = mqtt::packet::v3_1_1::Connect::builder()
+        .client_id("pingresp-timeout-test")
+        .unwrap()
+        .keep_alive(1)
+        .clean_session(true)
+        .build()
+        .unwrap();
+    let _ = client
+        .send(mqtt::packet::Packet::V3_1_1Connect(connect_packet))
+        .await;
+
+    // Simulate CONNACK response which triggers timer setup
+    let connack = mqtt::packet::v3_1_1::Connack::builder()
+        .session_present(false)
+        .return_code(client_mqtt::result_code::ConnectReturnCode::Accepted)
+        .build()
+        .unwrap();
+    let connack_bytes = mqtt::packet::Packet::V3_1_1Connack(connack).to_continuous_buffer();
+    let _ = event_sender.unbounded_send(mqtt_client_wasm::UnderlyingLayerEvent::Message(
+        connack_bytes,
+    ));
+
+    // Wait for CONNACK to be processed
+    let _ = tokio::time::timeout(tokio::time::Duration::from_millis(100), client.recv()).await;
+
+    // Wait for:
+    // 1. PingreqSend timer to fire (100ms) - sends PINGREQ
+    // 2. PingrespRecv timer to fire (30ms after PINGREQ) - timeout because no PINGRESP
+    // Total wait: ~150ms should be enough
+    tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
+
+    // The PingrespRecv timeout should have fired
+    // Note: mqtt-protocol-core may close the connection or emit an error on timeout
+    // The test verifies the code path is exercised
+}
