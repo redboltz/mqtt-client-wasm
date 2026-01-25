@@ -194,16 +194,8 @@ impl MqttProcessor {
                     #[cfg(target_arch = "wasm32")]
                     web_sys::console::log_1(&"Received WebSocket event".into());
                     if let Some(event) = event {
-                        // Check if it's a close event before handling
-                        let is_close_event = matches!(event, WebSocketEvent::Closed);
+                        // Handle the event - do NOT break on close to allow reconnection
                         self.handle_websocket_event(event).await;
-
-                        // Stop processing if connection is closed
-                        if is_close_event && matches!(self.state, ConnectionState::Closed) {
-                            #[cfg(target_arch = "wasm32")]
-                            web_sys::console::log_1(&"WebSocket closed, stopping event processing".into());
-                            break;
-                        }
                     } else {
                         // WebSocket event stream ended
                         #[cfg(target_arch = "wasm32")]
@@ -249,7 +241,8 @@ impl MqttProcessor {
             Request::Close { reply } => {
                 let result = self.close().await;
                 let _ = reply.send(result);
-                return false; // Signal to exit loop
+                // Do NOT exit the loop - allow reconnection by continuing to process requests
+                // The loop only exits when the request channel is closed (client dropped)
             }
             Request::State { reply } => {
                 let _ = reply.send(self.state);

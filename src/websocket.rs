@@ -333,7 +333,7 @@ impl WebSocketInterface for BrowserWebSocket {
                     }
 
                     let _ = self.event_sender.unbounded_send(WebSocketEvent::Closed);
-                    break;
+                    // Do NOT break - allow reconnection by continuing to process commands
                 }
                 WebSocketCommand::TimerExpired(timer_kind) => {
                     // Timer expired events will be handled by main processor

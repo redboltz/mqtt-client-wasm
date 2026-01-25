@@ -107,7 +107,7 @@ impl WebSocketInterface for MockWebSocket {
                 WebSocketCommand::Close => {
                     self.connected = false;
                     let _ = self.event_sender.unbounded_send(WebSocketEvent::Closed);
-                    break;
+                    // Don't break - allow reconnection by continuing to process commands
                 }
                 WebSocketCommand::TimerExpired(timer_kind) => {
                     // MockWebSocket ignores timer events

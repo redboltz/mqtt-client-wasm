@@ -1,5 +1,8 @@
 # mqtt-client-wasm
 
+[![CI](https://github.com/redboltz/mqtt-client-wasm/actions/workflows/ci.yml/badge.svg)](https://github.com/redboltz/mqtt-client-wasm/actions/workflows/ci.yml)
+[![codecov](https://codecov.io/gh/redboltz/mqtt-client-wasm/branch/main/graph/badge.svg)](https://codecov.io/gh/redboltz/mqtt-client-wasm)
+
 MQTT client library for browsers using WebSocket (ws/wss) transport, compiled to WebAssembly.
 
 This library provides a WebSocket-based MQTT client specifically designed for browser environments. It supports both MQTT v3.1.1 and v5.0 protocols over WebSocket connections (ws:// and wss://), making it ideal for web applications that need to communicate with MQTT brokers.

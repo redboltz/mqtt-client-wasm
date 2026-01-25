@@ -23,8 +23,7 @@ pub fn check_version() -> String {
 // ============================================================================
 
 /// Options for Connect packet (both versions)
-/// - `cleanSession` is used for V3.1.1 (maps to clean_session)
-/// - `cleanSession` is also used for V5.0 (maps to clean_start)
+/// - `cleanSession` or `cleanStart` can be used (both work for either version)
 /// - V5.0 properties are ignored when using V3.1.1 method
 #[derive(Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
@@ -32,6 +31,8 @@ pub struct ConnectOptions {
     pub client_id: String,
     pub keep_alive: Option<u16>,
     /// Clean session flag (V3.1.1) / Clean start flag (V5.0)
+    /// Accepts both "cleanSession" and "cleanStart" from JavaScript
+    #[serde(alias = "cleanStart")]
     pub clean_session: Option<bool>,
     pub user_name: Option<String>,
     pub password: Option<String>,
