@@ -1295,3 +1295,196 @@ async fn test_v50_publish() {
         panic!("Expected v5.0 PUBLISH packet");
     }
 }
+
+/// Test timer reset via CONNECT with keep_alive
+/// This exercises the RequestTimerReset event handling code path
+#[tokio::test]
+async fn test_timer_reset_via_connect() {
+    let config = MqttConfig {
+        version: client_mqtt::Version::V3_1_1,
+        auto_pub_response: true,
+        auto_ping_response: true,
+        ..Default::default()
+    };
+    let mock_ws = MockWebSocket::new();
+    let event_sender = mock_ws.event_sender.clone();
+
+    let client = MqttClient::new_with_websocket(config, mock_ws);
+
+    let _ = client.connect("ws://test.example.com").await;
+    tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+
+    // Send CONNECT with keep_alive which should trigger timer setup
+    let connect_packet = mqtt::packet::v3_1_1::Connect::builder()
+        .client_id("timer-test-client")
+        .unwrap()
+        .keep_alive(60) // 60 seconds keep-alive
+        .clean_session(true)
+        .build()
+        .unwrap();
+    let _ = client
+        .send(mqtt::packet::Packet::V3_1_1Connect(connect_packet))
+        .await;
+
+    // Simulate CONNACK response which triggers timer events
+    let connack = mqtt::packet::v3_1_1::Connack::builder()
+        .session_present(false)
+        .return_code(client_mqtt::result_code::ConnectReturnCode::Accepted)
+        .build()
+        .unwrap();
+    let connack_bytes = mqtt::packet::Packet::V3_1_1Connack(connack).to_continuous_buffer();
+    let _ = event_sender.unbounded_send(mqtt_client_wasm::WebSocketEvent::Message(connack_bytes));
+
+    // Wait for CONNACK to be processed and timer to be set
+    let _ = tokio::time::timeout(tokio::time::Duration::from_millis(500), client.recv()).await;
+
+    // Connection should be established
+    tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+}
+
+/// Test timer cancel via disconnect
+/// This exercises the RequestTimerCancel event handling code path
+#[tokio::test]
+async fn test_timer_cancel_via_disconnect() {
+    let config = MqttConfig {
+        version: client_mqtt::Version::V3_1_1,
+        ..Default::default()
+    };
+    let mock_ws = MockWebSocket::new();
+    let event_sender = mock_ws.event_sender.clone();
+
+    let client = MqttClient::new_with_websocket(config, mock_ws);
+
+    let _ = client.connect("ws://test.example.com").await;
+    tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+
+    // Establish MQTT connection first
+    let connect_packet = mqtt::packet::v3_1_1::Connect::builder()
+        .client_id("timer-cancel-test")
+        .unwrap()
+        .keep_alive(60)
+        .clean_session(true)
+        .build()
+        .unwrap();
+    let _ = client
+        .send(mqtt::packet::Packet::V3_1_1Connect(connect_packet))
+        .await;
+
+    // Simulate CONNACK
+    let connack = mqtt::packet::v3_1_1::Connack::builder()
+        .session_present(false)
+        .return_code(client_mqtt::result_code::ConnectReturnCode::Accepted)
+        .build()
+        .unwrap();
+    let connack_bytes = mqtt::packet::Packet::V3_1_1Connack(connack).to_continuous_buffer();
+    let _ = event_sender.unbounded_send(mqtt_client_wasm::WebSocketEvent::Message(connack_bytes));
+
+    // Wait for CONNACK
+    let _ = tokio::time::timeout(tokio::time::Duration::from_millis(500), client.recv()).await;
+    tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+
+    // Send DISCONNECT which should trigger timer cancellation
+    let disconnect = mqtt::packet::v3_1_1::Disconnect::builder().build().unwrap();
+    let _ = client
+        .send(mqtt::packet::Packet::V3_1_1Disconnect(disconnect))
+        .await;
+
+    tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+}
+
+/// Test multiple timer resets (simulating keep-alive refresh)
+#[tokio::test]
+async fn test_multiple_timer_resets() {
+    let config = MqttConfig {
+        version: client_mqtt::Version::V3_1_1,
+        ..Default::default()
+    };
+    let mock_ws = MockWebSocket::new();
+    let event_sender = mock_ws.event_sender.clone();
+
+    let client = MqttClient::new_with_websocket(config, mock_ws);
+
+    let _ = client.connect("ws://test.example.com").await;
+    tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+
+    // Establish MQTT connection
+    let connect_packet = mqtt::packet::v3_1_1::Connect::builder()
+        .client_id("multi-timer-test")
+        .unwrap()
+        .keep_alive(60)
+        .clean_session(true)
+        .build()
+        .unwrap();
+    let _ = client
+        .send(mqtt::packet::Packet::V3_1_1Connect(connect_packet))
+        .await;
+
+    let connack = mqtt::packet::v3_1_1::Connack::builder()
+        .session_present(false)
+        .return_code(client_mqtt::result_code::ConnectReturnCode::Accepted)
+        .build()
+        .unwrap();
+    let connack_bytes = mqtt::packet::Packet::V3_1_1Connack(connack).to_continuous_buffer();
+    let _ = event_sender.unbounded_send(mqtt_client_wasm::WebSocketEvent::Message(connack_bytes));
+
+    let _ = tokio::time::timeout(tokio::time::Duration::from_millis(500), client.recv()).await;
+    tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+
+    // Simulate receiving PINGRESP multiple times (triggers timer reset)
+    for _ in 0..3 {
+        let pingresp = mqtt::packet::v3_1_1::Pingresp::builder().build().unwrap();
+        let pingresp_bytes = mqtt::packet::Packet::V3_1_1Pingresp(pingresp).to_continuous_buffer();
+        let _ =
+            event_sender.unbounded_send(mqtt_client_wasm::WebSocketEvent::Message(pingresp_bytes));
+        let _ = tokio::time::timeout(tokio::time::Duration::from_millis(100), client.recv()).await;
+    }
+}
+
+/// Test v5.0 timer handling
+#[tokio::test]
+async fn test_v50_timer_handling() {
+    let config = MqttConfig {
+        version: client_mqtt::Version::V5_0,
+        ..Default::default()
+    };
+    let mock_ws = MockWebSocket::new();
+    let event_sender = mock_ws.event_sender.clone();
+
+    let client = MqttClient::new_with_websocket(config, mock_ws);
+
+    let _ = client.connect("ws://test.example.com").await;
+    tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+
+    // Send v5.0 CONNECT
+    let connect_packet = mqtt::packet::v5_0::Connect::builder()
+        .client_id("v50-timer-test")
+        .unwrap()
+        .keep_alive(30)
+        .clean_start(true)
+        .build()
+        .unwrap();
+    let _ = client
+        .send(mqtt::packet::Packet::V5_0Connect(connect_packet))
+        .await;
+
+    // Simulate v5.0 CONNACK
+    let connack = mqtt::packet::v5_0::Connack::builder()
+        .session_present(false)
+        .reason_code(client_mqtt::result_code::ConnectReasonCode::Success)
+        .build()
+        .unwrap();
+    let connack_bytes = mqtt::packet::Packet::V5_0Connack(connack).to_continuous_buffer();
+    let _ = event_sender.unbounded_send(mqtt_client_wasm::WebSocketEvent::Message(connack_bytes));
+
+    let _ = tokio::time::timeout(tokio::time::Duration::from_millis(500), client.recv()).await;
+    tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+
+    // Send v5.0 DISCONNECT
+    let disconnect = mqtt::packet::v5_0::Disconnect::builder()
+        .reason_code(client_mqtt::result_code::DisconnectReasonCode::NormalDisconnection)
+        .build()
+        .unwrap();
+    let _ = client
+        .send(mqtt::packet::Packet::V5_0Disconnect(disconnect))
+        .await;
+}

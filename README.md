@@ -3,43 +3,70 @@
 [![CI](https://github.com/redboltz/mqtt-client-wasm/actions/workflows/ci.yml/badge.svg)](https://github.com/redboltz/mqtt-client-wasm/actions/workflows/ci.yml)
 [![codecov](https://codecov.io/gh/redboltz/mqtt-client-wasm/branch/main/graph/badge.svg)](https://codecov.io/gh/redboltz/mqtt-client-wasm)
 
-MQTT client library for browsers using WebSocket (ws/wss) transport, compiled to WebAssembly.
+MQTT client library compiled to WebAssembly, supporting both browsers and Node.js.
 
-This library provides a WebSocket-based MQTT client specifically designed for browser environments. It supports both MQTT v3.1.1 and v5.0 protocols over WebSocket connections (ws:// and wss://), making it ideal for web applications that need to communicate with MQTT brokers.
+## Supported Transports
+
+| Transport | Browser | Node.js |
+|-----------|---------|---------|
+| WebSocket (ws://) | Yes | Yes |
+| WebSocket Secure (wss://) | Yes | Yes |
+| TCP | - | Yes |
+| TLS | - | Yes |
 
 ## Features
 
-- **Browser WebSocket Transport**: Uses browser's native WebSocket API for ws:// and wss:// connections
 - **MQTT v3.1.1 and v5.0**: Full support for both protocol versions
+- **Multiple Transports**: WebSocket for both platforms, TCP/TLS for Node.js
 - **Low-level Endpoint API**: Direct packet send/recv operations for full control
 - **Auto Response Options**: Configurable automatic handling of PUBACK, PUBREC, PUBREL, PUBCOMP, and PINGRESP
-- **Interactive Client Tool**: Ready-to-use HTML client for testing and debugging
-- **Sequence Test Tool**: Automated MQTT packet sequence testing
+- **Interactive Client Tool**: Ready-to-use HTML client for testing and debugging (browser)
+
+---
 
 ## Installation
 
-### npm (Recommended for bundler projects)
+### npm
 
 ```bash
 npm install @redboltz/mqtt-client-wasm
 ```
 
-Then import in your JavaScript/TypeScript:
+For WebSocket transport in Node.js, also install the `ws` package:
 
-```javascript
-import init, { WasmMqttClient, WasmMqttConfig, WasmPacketType } from '@redboltz/mqtt-client-wasm';
-
-async function main() {
-    await init();
-    // ... use the client
-}
+```bash
+npm install ws
 ```
 
-Works with webpack, vite, rollup, and other bundlers.
+---
 
-### Direct Download (No bundler)
+## Setup by Platform
 
-Download the latest release from [GitHub Releases](https://github.com/redboltz/mqtt-client-wasm/releases) and include in your HTML:
+### Browser Setup
+
+```javascript
+import init, {
+    WasmMqttClient,
+    WasmMqttConfig,
+    WasmPacketType
+} from '@redboltz/mqtt-client-wasm';
+
+// Initialize WASM module (required once)
+await init();
+
+// Create client
+const config = new WasmMqttConfig({
+    version: '5.0',           // '3.1.1' or '5.0'
+    autoPubResponse: true,    // Auto handle QoS acknowledgments
+    autoPingResponse: true,   // Auto respond to PINGREQ
+});
+const client = new WasmMqttClient(config);
+
+// Connect via WebSocket
+await client.connect('wss://broker.example.com:8884/');
+```
+
+#### Direct Script Include (No Bundler)
 
 ```html
 <script type="module">
@@ -49,57 +76,192 @@ Download the latest release from [GitHub Releases](https://github.com/redboltz/m
 </script>
 ```
 
-### Build from Source
-
-```bash
-# For direct browser use (ES modules)
-wasm-pack build --target web
-
-# For bundlers (npm-style)
-wasm-pack build --target bundler
-```
-
-## Quick Start (Demo)
-
-### 1. Build WASM Package
-
-```bash
-wasm-pack build --target web
-```
-
-### 2. Start Web Server
-
-```bash
-./start_web_server.sh        # Default port 8080
-./start_web_server.sh 9000   # Custom port
-```
-
-### 3. Open in Browser
-
-Access `http://localhost:8080` to see available tools:
-
-- **Client Tool** (`client.html`): Interactive MQTT client with Connect, Subscribe, Publish UI
-- **Sequence Test** (`sequence_test.html`): Automated MQTT packet sequence testing
-
-## JavaScript API
-
-### Configuration
+### Node.js Setup
 
 ```javascript
-import init, { WasmMqttClient, WasmMqttConfig } from './pkg/mqtt_client_wasm.js';
+const {
+    WasmMqttClient,
+    WasmMqttConfig,
+    WasmMqttPacket,
+    WasmPacketType,
+    init,
+    createClientWithTransport,
+    NodeWebSocketTransport,
+    NodeTcpTransport,
+    NodeTlsTransport
+} = require('@redboltz/mqtt-client-wasm');
 
-await init();
+// Initialize WASM module (required once)
+init();
+```
 
+#### Unified API (Recommended)
+
+Use `createClientWithTransport()` for the same API as browser. The WASM client handles state machine, timers, and automatic responses.
+
+```javascript
+const fs = require('fs');
+
+// Create transport and client
+const transport = new NodeTcpTransport();
+const config = new WasmMqttConfig({ version: '5.0' });
+const client = createClientWithTransport(config, transport);
+
+// Connect transport AFTER creating client
+await transport.connect('broker.example.com', 1883);
+
+// Use the same API as browser
+const connectPacket = client.newConnectPacket({
+    clientId: 'my-node-client',
+    keepAlive: 60,
+    cleanSession: true,
+});
+await client.send(connectPacket);
+
+const connack = await client.recv();
+console.log('Connected:', client.asConnack(connack).sessionPresent);
+
+// Subscribe
+const packetId = await client.acquirePacketId();
+const subPacket = client.newSubscribePacket({
+    packetId,
+    subscriptions: [{ topic: 'test/#', qos: 1 }],
+});
+await client.send(subPacket);
+const suback = await client.recv();
+
+// Receive messages
+while (true) {
+    const packet = await client.recv();
+    if (packet.packetType() === WasmPacketType.Publish) {
+        const pub = client.asPublish(packet);
+        console.log(`Received: ${pub.topicName} = ${pub.payload}`);
+    }
+}
+```
+
+#### Raw Transport API (Direct Control)
+
+For direct packet control without the WASM state machine:
+
+#### WebSocket Transport (ws/wss)
+
+```javascript
+// Plain WebSocket (ws://)
+const transport = new NodeWebSocketTransport();
+await transport.connect('ws://broker.example.com:8080/');
+
+// Secure WebSocket (wss://) with CA certificate
+const fs = require('fs');
+const transport = new NodeWebSocketTransport({
+    ca: fs.readFileSync('ca.pem'),
+});
+await transport.connect('wss://broker.example.com:8884/');
+
+// Send/receive raw MQTT packets
+transport.onMessage((data) => {
+    // data is Uint8Array of received MQTT packet
+    const packet = WasmMqttPacket.fromBytes(data, 'v5.0');
+    console.log('Received:', packet.packetType());
+});
+
+// Create and send packets
+const config = new WasmMqttConfig({ version: '5.0' });
+const client = new WasmMqttClient(config);
+const connectPacket = client.newConnectPacket({
+    clientId: 'my-node-client',
+    keepAlive: 60,
+    cleanSession: true,
+});
+transport.send(connectPacket.toBytes());
+```
+
+#### TCP Transport (Node.js only)
+
+```javascript
+const transport = new NodeTcpTransport();
+await transport.connect('broker.example.com', 1883);
+
+transport.onMessage((data) => {
+    // Handle received packets
+});
+
+// Send MQTT packets
+transport.send(connectPacket.toBytes());
+```
+
+#### TLS Transport (Node.js only)
+
+```javascript
+const fs = require('fs');
+
+const transport = new NodeTlsTransport({
+    ca: fs.readFileSync('ca.pem'),
+    // Optional client certificate authentication
+    // cert: fs.readFileSync('client.crt'),
+    // key: fs.readFileSync('client.key'),
+});
+await transport.connect('broker.example.com', 8883);
+
+transport.onMessage((data) => {
+    // Handle received packets
+});
+
+transport.send(connectPacket.toBytes());
+```
+
+#### TLS Options (for NodeTlsTransport and NodeWebSocketTransport)
+
+Both `NodeTlsTransport` and `NodeWebSocketTransport` accept a TLS options object in their constructor. These options are passed directly to Node.js TLS module.
+
+| Option | Type | Description |
+|--------|------|-------------|
+| `ca` | Buffer/string | CA certificate(s) for server verification |
+| `cert` | Buffer/string | Client certificate for mutual TLS |
+| `key` | Buffer/string | Client private key for mutual TLS |
+| `passphrase` | string | Passphrase for encrypted private key |
+| `rejectUnauthorized` | boolean | Reject connections with unverified certificates (default: true) |
+| `servername` | string | Server name for SNI (Server Name Indication) |
+| `minVersion` | string | Minimum TLS version ('TLSv1.2', 'TLSv1.3') |
+| `maxVersion` | string | Maximum TLS version |
+| `ciphers` | string | Cipher suites to use |
+
+**Example: Mutual TLS Authentication**
+
+```javascript
+const transport = new NodeTlsTransport({
+    ca: fs.readFileSync('ca.pem'),
+    cert: fs.readFileSync('client.crt'),
+    key: fs.readFileSync('client.key'),
+    passphrase: 'optional-key-passphrase',
+});
+```
+
+**Example: Custom TLS Configuration**
+
+```javascript
+const transport = new NodeWebSocketTransport({
+    ca: fs.readFileSync('ca.pem'),
+    minVersion: 'TLSv1.2',
+    servername: 'broker.example.com',
+});
+```
+
+---
+
+## Common API (Both Platforms)
+
+The following sections apply to both browser and Node.js environments.
+
+### Configuration Options
+
+```javascript
 const config = new WasmMqttConfig({
     version: '5.0',
     autoPubResponse: true,
     autoPingResponse: true,
 });
-
-const client = new WasmMqttClient(config);
 ```
-
-### Configuration Options
 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
@@ -120,8 +282,6 @@ const client = new WasmMqttClient(config);
 ### Connect
 
 ```javascript
-await client.connect('wss://broker.example.com:8884/');
-
 const connectPacket = client.newConnectPacket({
     clientId: 'my-client',
     keepAlive: 60,
@@ -144,6 +304,7 @@ const connectPacket = client.newConnectPacket({
     authenticationMethod: 'SCRAM-SHA-256',
     authenticationData: [0x01, 0x02, 0x03],
 });
+
 await client.send(connectPacket);
 ```
 
@@ -195,6 +356,7 @@ const subscribePacket = client.newSubscribePacket({
     subscriptionIdentifier: 12345,
     userProperties: [{ key: 'source', value: 'web' }],
 });
+
 await client.send(subscribePacket);
 ```
 
@@ -234,6 +396,7 @@ const unsubscribePacket = client.newUnsubscribePacket({
     // v5.0 Properties
     userProperties: [{ key: 'reason', value: 'cleanup' }],
 });
+
 await client.send(unsubscribePacket);
 ```
 
@@ -271,6 +434,7 @@ const publishPacket = client.newPublishPacket({
     contentType: 'application/json',
     userProperties: [{ key: 'unit', value: 'celsius' }],
 });
+
 await client.send(publishPacket);
 ```
 
@@ -310,6 +474,7 @@ const disconnectPacket = client.newDisconnectPacket({
     sessionExpiryInterval: 0,
     userProperties: [{ key: 'client', value: 'web' }],
 });
+
 await client.send(disconnectPacket);
 ```
 
@@ -375,6 +540,7 @@ const authPacket = client.newAuthPacket({
     reasonString: 'Continue',
     userProperties: [{ key: 'step', value: '2' }],
 });
+
 await client.send(authPacket);
 ```
 
@@ -392,11 +558,18 @@ await client.send(authPacket);
 
 ### Receive Messages
 
+The `client.recv()` API works identically on both browser and Node.js:
+
 ```javascript
 while (true) {
     const packet = await client.recv();
 
     switch (packet.packetType()) {
+        case WasmPacketType.Connack: {
+            const connack = client.asConnack(packet);
+            console.log('Connected:', connack.sessionPresent);
+            break;
+        }
         case WasmPacketType.Publish: {
             const pub = client.asPublish(packet);
             console.log(`Topic: ${pub.topicName}, Payload: ${pub.payload}`);
@@ -414,13 +587,50 @@ while (true) {
 
 ---
 
-## Browser Requirements
+## Browser Demo Tools
+
+### 1. Build WASM Package
+
+```bash
+wasm-pack build --target web
+```
+
+### 2. Start Web Server
+
+```bash
+./start_web_server.sh        # Default port 8080
+./start_web_server.sh 9000   # Custom port
+```
+
+### 3. Open in Browser
+
+Access `http://localhost:8080` to see available tools:
+
+- **Client Tool** (`client.html`): Interactive MQTT client with Connect, Subscribe, Publish UI
+- **Sequence Test** (`sequence_test.html`): Automated MQTT packet sequence testing
+
+### Browser Requirements
 
 - Modern browser with WebSocket support
 - For `wss://` (secure WebSocket): HTTPS page or localhost
 - For `ws://` (plain WebSocket): HTTP page (note: some ports like 10080 are blocked by browsers)
 
+---
+
 ## Development
+
+### Build
+
+```bash
+# Browser (ES modules)
+wasm-pack build --target web
+
+# Node.js (CommonJS)
+wasm-pack build --target nodejs --out-dir pkg-nodejs
+
+# Bundlers (npm-style)
+wasm-pack build --target bundler
+```
 
 ### Run Tests
 
@@ -431,19 +641,14 @@ cargo test --features native
 # WASM tests
 wasm-pack test --node
 
+# Node.js integration tests
+node nodejs/test/integration.test.js
+
 # Full check (fmt, clippy, build, test)
 ./check.sh
 ```
 
-### Build
-
-```bash
-# Debug build
-wasm-pack build --target web --dev
-
-# Release build
-wasm-pack build --target web
-```
+---
 
 ## License
 

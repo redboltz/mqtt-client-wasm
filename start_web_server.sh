@@ -27,7 +27,10 @@ WasmHandler.extensions_map['.wasm'] = 'application/wasm'
 WasmHandler.extensions_map['.js'] = 'application/javascript'
 WasmHandler.extensions_map['.mjs'] = 'application/javascript'
 
-with socketserver.TCPServer(('', PORT), WasmHandler) as httpd:
+class ReuseAddrTCPServer(socketserver.TCPServer):
+    allow_reuse_address = True
+
+with ReuseAddrTCPServer(('', PORT), WasmHandler) as httpd:
     print(f'Serving on port {PORT}')
     httpd.serve_forever()
 "

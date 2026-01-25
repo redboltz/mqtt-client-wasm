@@ -47,3 +47,11 @@ CLAUDE.md
 lcov.info
 *.profraw
 *.profdata
+tarpaulin-report.html
+
+# Node.js
+node_modules/
+package-lock.json
+
+# Work directory for external dependencies
+.work/

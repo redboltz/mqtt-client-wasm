@@ -6,9 +6,12 @@
 
 mod client;
 mod error;
+pub mod platform;
 mod types;
 mod websocket;
 
+#[cfg(target_arch = "wasm32")]
+mod js_transport;
 #[cfg(target_arch = "wasm32")]
 mod wasm_interface;
 
@@ -20,6 +23,7 @@ pub use websocket::{WebSocketCommand, WebSocketEvent, WebSocketInterface};
 // WASM-specific exports - export the clean client implementation
 #[cfg(target_arch = "wasm32")]
 pub mod wasm {
+    pub use crate::js_transport::{create_client_with_js_transport, JsTransport};
     pub use crate::wasm_interface::{
         WasmMqttClient, WasmMqttConfig, WasmMqttPacket, WasmPacketType,
     };
