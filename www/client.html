@@ -507,6 +507,7 @@
         let recvLoopRunning = false;
         let subscribedTopics = new Map();
         let currentVersion = '5.0'; // Track current MQTT version
+        let lastConfig = null; // Track last used config for reconnection detection
 
         // DOM Elements
         const connectBtn = document.getElementById('connectBtn');
@@ -551,8 +552,8 @@
                 subscribeBtn.disabled = true;
                 unsubscribeBtn.disabled = true;
                 publishBtn.disabled = true;
-                subscribedTopics.clear();
-                updateSubscribedList();
+                // Don't clear subscribedTopics here - MQTT session may persist
+                // Clear only when CONNACK indicates sessionPresent=false
             }
         }
 
@@ -704,7 +705,7 @@
                     log(`Disconnect error: ${e}`, 'error');
                 }
                 updateConnectionStatus(false);
-                client = null;
+                // Keep client object for reconnection (don't set client = null)
                 return;
             }
 
@@ -740,28 +741,50 @@
             try {
                 const { WasmMqttClient, WasmMqttConfig, WasmPacketType } = wasmModule;
 
-                // Create config
-                const configOptions = {
+                // Build current config for comparison
+                const currentConfig = {
                     version: version,
                     autoPubResponse: autoPubResponse,
                     autoPingResponse: autoPingResponse,
+                    pingreqSendIntervalMs: pingreqSendIntervalMs,
                 };
-                if (pingreqSendIntervalMs !== null) {
-                    configOptions.pingreqSendIntervalMs = pingreqSendIntervalMs;
-                }
 
-                const config = new WasmMqttConfig(configOptions);
-                client = new WasmMqttClient(config);
-                log(`Connecting to ${url}...`, 'info');
+                // Check if we need to create a new client (first time or config changed)
+                const configChanged = lastConfig &&
+                    (lastConfig.version !== currentConfig.version ||
+                     lastConfig.autoPubResponse !== currentConfig.autoPubResponse ||
+                     lastConfig.autoPingResponse !== currentConfig.autoPingResponse ||
+                     lastConfig.pingreqSendIntervalMs !== currentConfig.pingreqSendIntervalMs);
+
+                const needNewClient = !client || configChanged;
+
+                if (needNewClient) {
+                    // Create config
+                    const configOptions = {
+                        version: version,
+                        autoPubResponse: autoPubResponse,
+                        autoPingResponse: autoPingResponse,
+                    };
+                    if (pingreqSendIntervalMs !== null) {
+                        configOptions.pingreqSendIntervalMs = pingreqSendIntervalMs;
+                    }
+
+                    const config = new WasmMqttConfig(configOptions);
+                    client = new WasmMqttClient(config);
+                    lastConfig = currentConfig;
+                    log(`Created new client, connecting to ${url}...`, 'info');
+                } else {
+                    log(`Reconnecting to ${url} (reusing client)...`, 'info');
+                }
 
                 await client.connect(url);
                 log('WebSocket connected', 'info');
 
                 // Build CONNECT packet
+                // cleanStart works for both V3.1.1 (clean_session) and V5.0 (clean_start)
                 const connectOptions = {
                     clientId: clientId,
                     cleanStart: cleanStart,
-                    cleanSession: cleanStart, // For V3.1.1 compatibility
                     keepAlive: keepAlive
                 };
                 if (username) connectOptions.userName = username;
@@ -807,19 +830,27 @@
                     }
 
                     if (code === 0) {
+                        // Clear subscribed topics if session is not present (new session)
+                        if (!connack.sessionPresent) {
+                            subscribedTopics.clear();
+                            updateSubscribedList();
+                            log('Session not present - subscriptions cleared', 'info');
+                        } else {
+                            log('Session present - subscriptions preserved', 'info');
+                        }
                         updateConnectionStatus(true);
                         recvLoop();
                     } else {
                         log(`Connection refused: ${codeLabel}=${code}`, 'error');
-                        client = null;
+                        // Keep client for reconnection attempt
                     }
                 } else {
                     log(`Unexpected packet: ${connackPacket.packetTypeString()}`, 'error');
-                    client = null;
+                    // Keep client for reconnection attempt
                 }
             } catch (e) {
                 log(`Connection error: ${e}`, 'error');
-                client = null;
+                // Keep client for reconnection attempt
             }
         }
 
