@@ -92,7 +92,6 @@ await init();
 
 const config = new WasmMqttConfig({
     version: '5.0',
-    pingreqSendIntervalMs: 30000,
     autoPubResponse: true,
     autoPingResponse: true,
 });
@@ -105,14 +104,14 @@ const client = new WasmMqttClient(config);
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
 | `version` | string | `'3.1.1'` | MQTT version (`'3.1.1'` or `'5.0'`) |
-| `pingreqSendIntervalMs` | number | null | Ping interval in ms (null = auto from keepAlive) |
-| `autoPubResponse` | boolean | false | Auto handle QoS acknowledgments |
-| `autoPingResponse` | boolean | false | Auto respond to PINGREQ |
-| `autoMapTopicAliasSend` | boolean | false | Auto map topic aliases (v5.0) |
-| `autoReplaceTopicAliasSend` | boolean | false | Auto replace topic with alias (v5.0) |
-| `pingrespRecvTimeoutMs` | number | null | PINGRESP timeout in ms |
-| `connectionEstablishTimeoutMs` | number | null | Connection timeout in ms |
-| `shutdownTimeoutMs` | number | null | Shutdown timeout in ms |
+| `pingreqSendIntervalMs` | number | (auto) | Ping interval in ms (omit for auto from keepAlive) |
+| `autoPubResponse` | boolean | `true` | Auto handle QoS acknowledgments |
+| `autoPingResponse` | boolean | `true` | Auto respond to PINGREQ |
+| `autoMapTopicAliasSend` | boolean | `false` | Auto map topic aliases (v5.0) |
+| `autoReplaceTopicAliasSend` | boolean | `false` | Auto replace topic with alias (v5.0) |
+| `pingrespRecvTimeoutMs` | number | (disabled) | PINGRESP timeout in ms |
+| `connectionEstablishTimeoutMs` | number | (disabled) | Connection timeout in ms |
+| `shutdownTimeoutMs` | number | (disabled) | Shutdown timeout in ms |
 
 ---
 
