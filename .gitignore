@@ -55,3 +55,7 @@ package-lock.json
 
 # Work directory for external dependencies
 .work/
+
+# Generated WASM packages (created by wasm-pack build)
+pkg/
+pkg-nodejs/
