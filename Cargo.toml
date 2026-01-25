@@ -2,6 +2,7 @@
 name = "mqtt-client-wasm"
 version = "0.1.0"
 edition = "2021"
+rust-version = "1.87.0"
 description = "MQTT v3.1.1/v5.0 client for browsers using WebSocket (ws/wss) transport, compiled to WebAssembly"
 license = "MIT"
 repository = "https://github.com/redboltz/mqtt-client-wasm"

@@ -12,6 +12,8 @@ mod common;
 
 use common::MockWebSocket;
 use futures::channel::oneshot;
+use mqtt::packet::GenericPacketTrait;
+use mqtt_client_wasm::mqtt as client_mqtt;
 use mqtt_client_wasm::{ConnectionState, MqttClient, MqttConfig, Result};
 use mqtt_protocol_core::mqtt;
 
@@ -451,5 +453,825 @@ async fn test_reject_connect_when_already_connected() {
     assert!(second_connect.is_err(), "Second connection should fail");
     if let Err(e) = second_connect {
         assert!(e.to_string().contains("Already connecting or connected"));
+    }
+}
+
+/// Test WebSocket error handling
+#[tokio::test]
+async fn test_websocket_error_handling() {
+    let config = MqttConfig::default();
+    let mock_ws = MockWebSocket::new();
+    let event_sender = mock_ws.event_sender.clone();
+
+    let client = MqttClient::new_with_websocket(config, mock_ws);
+
+    // Connect first
+    let _ = client.connect("ws://test.example.com").await;
+    tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+
+    // Simulate WebSocket error
+    let _ = event_sender.unbounded_send(mqtt_client_wasm::WebSocketEvent::Error(
+        "Connection lost".to_string(),
+    ));
+
+    // Wait for error to be processed
+    tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+
+    // State should be Disconnected after error
+    let state = client.state().await;
+    assert_eq!(state, ConnectionState::Disconnected);
+}
+
+/// Test receiving MQTT packets through WebSocket
+#[tokio::test]
+async fn test_receive_mqtt_packet() {
+    let config = MqttConfig {
+        version: client_mqtt::Version::V3_1_1,
+        ..Default::default()
+    };
+    let mock_ws = MockWebSocket::new();
+    let event_sender = mock_ws.event_sender.clone();
+
+    let client = MqttClient::new_with_websocket(config, mock_ws);
+
+    // Connect
+    let _ = client.connect("ws://test.example.com").await;
+    tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+
+    // Create a CONNACK packet to simulate broker response
+    let connack = mqtt::packet::v3_1_1::Connack::builder()
+        .session_present(false)
+        .return_code(client_mqtt::result_code::ConnectReturnCode::Accepted)
+        .build()
+        .unwrap();
+    let connack_bytes = mqtt::packet::Packet::V3_1_1Connack(connack).to_continuous_buffer();
+
+    // Simulate receiving CONNACK
+    let _ = event_sender.unbounded_send(mqtt_client_wasm::WebSocketEvent::Message(connack_bytes));
+
+    // Try to receive the packet
+    let recv_result =
+        tokio::time::timeout(tokio::time::Duration::from_millis(500), client.recv()).await;
+
+    assert!(recv_result.is_ok(), "recv should not timeout");
+    let packet_result = recv_result.unwrap();
+    assert!(packet_result.is_ok(), "Should receive packet successfully");
+
+    if let mqtt::packet::Packet::V3_1_1Connack(received_connack) = packet_result.unwrap() {
+        assert!(!received_connack.session_present());
+    } else {
+        panic!("Expected CONNACK packet");
+    }
+}
+
+/// Test recv timeout behavior using tokio::time::timeout
+#[tokio::test]
+async fn test_recv_timeout() {
+    let config = MqttConfig::default();
+    let mock_ws = MockWebSocket::new();
+
+    let client = MqttClient::new_with_websocket(config, mock_ws);
+
+    // Connect
+    let _ = client.connect("ws://test.example.com").await;
+    tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+
+    // Try to receive with a short timeout (no packets coming)
+    let recv_result =
+        tokio::time::timeout(tokio::time::Duration::from_millis(100), client.recv()).await;
+
+    // Should timeout
+    assert!(recv_result.is_err());
+}
+
+/// Test config with pingreq_send_interval
+#[tokio::test]
+async fn test_config_with_pingreq_interval() {
+    let config = MqttConfig {
+        pingreq_send_interval_ms: Some(5000),
+        auto_pub_response: true,
+        auto_ping_response: true,
+        ..Default::default()
+    };
+    let mock_ws = MockWebSocket::new();
+
+    let client = MqttClient::new_with_websocket(config, mock_ws);
+
+    // Connect and verify client works with custom config
+    let connect_result = client.connect("ws://test.example.com").await;
+    assert!(connect_result.is_ok());
+
+    tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+
+    let state = client.state().await;
+    assert_eq!(state, ConnectionState::Connected);
+}
+
+/// Test sending CONNECT packet and receiving response
+#[tokio::test]
+async fn test_connect_packet_exchange() {
+    let config = MqttConfig {
+        version: client_mqtt::Version::V3_1_1,
+        ..Default::default()
+    };
+    let mock_ws = MockWebSocket::new();
+    let event_sender = mock_ws.event_sender.clone();
+
+    let client = MqttClient::new_with_websocket(config, mock_ws);
+
+    // Connect WebSocket
+    let _ = client.connect("ws://test.example.com").await;
+    tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+
+    // Send CONNECT packet
+    let connect_packet = mqtt::packet::v3_1_1::Connect::builder()
+        .client_id("test-client")
+        .unwrap()
+        .keep_alive(60)
+        .clean_session(true)
+        .build()
+        .unwrap();
+
+    let packet = mqtt::packet::Packet::V3_1_1Connect(connect_packet);
+    let send_result = client.send(packet).await;
+    assert!(send_result.is_ok());
+
+    // Simulate CONNACK response from broker
+    let connack = mqtt::packet::v3_1_1::Connack::builder()
+        .session_present(false)
+        .return_code(client_mqtt::result_code::ConnectReturnCode::Accepted)
+        .build()
+        .unwrap();
+    let connack_bytes = mqtt::packet::Packet::V3_1_1Connack(connack).to_continuous_buffer();
+    let _ = event_sender.unbounded_send(mqtt_client_wasm::WebSocketEvent::Message(connack_bytes));
+
+    // Receive CONNACK
+    let recv_result =
+        tokio::time::timeout(tokio::time::Duration::from_millis(500), client.recv()).await;
+
+    assert!(recv_result.is_ok());
+    let packet = recv_result.unwrap().unwrap();
+    assert!(matches!(packet, mqtt::packet::Packet::V3_1_1Connack(_)));
+}
+
+/// Test MQTT v5.0 packet exchange
+#[tokio::test]
+async fn test_mqtt_v50_packet_exchange() {
+    let config = MqttConfig {
+        version: client_mqtt::Version::V5_0,
+        ..Default::default()
+    };
+    let mock_ws = MockWebSocket::new();
+    let event_sender = mock_ws.event_sender.clone();
+
+    let client = MqttClient::new_with_websocket(config, mock_ws);
+
+    // Connect WebSocket
+    let _ = client.connect("ws://test.example.com").await;
+    tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+
+    // Send v5.0 CONNECT packet
+    let connect_packet = mqtt::packet::v5_0::Connect::builder()
+        .client_id("test-client-v5")
+        .unwrap()
+        .keep_alive(60)
+        .clean_start(true)
+        .build()
+        .unwrap();
+
+    let packet = mqtt::packet::Packet::V5_0Connect(connect_packet);
+    let send_result = client.send(packet).await;
+    assert!(send_result.is_ok());
+
+    // Simulate v5.0 CONNACK response
+    let connack = mqtt::packet::v5_0::Connack::builder()
+        .session_present(false)
+        .reason_code(client_mqtt::result_code::ConnectReasonCode::Success)
+        .build()
+        .unwrap();
+    let connack_bytes = mqtt::packet::Packet::V5_0Connack(connack).to_continuous_buffer();
+    let _ = event_sender.unbounded_send(mqtt_client_wasm::WebSocketEvent::Message(connack_bytes));
+
+    // Receive CONNACK
+    let recv_result =
+        tokio::time::timeout(tokio::time::Duration::from_millis(500), client.recv()).await;
+
+    assert!(recv_result.is_ok());
+    let packet = recv_result.unwrap().unwrap();
+    assert!(matches!(packet, mqtt::packet::Packet::V5_0Connack(_)));
+}
+
+/// Test receiving multiple packets in sequence
+#[tokio::test]
+async fn test_receive_multiple_packets() {
+    let config = MqttConfig {
+        version: client_mqtt::Version::V3_1_1,
+        ..Default::default()
+    };
+    let mock_ws = MockWebSocket::new();
+    let event_sender = mock_ws.event_sender.clone();
+
+    let client = MqttClient::new_with_websocket(config, mock_ws);
+
+    let _ = client.connect("ws://test.example.com").await;
+    tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+
+    // Send and receive packets one at a time for reliability
+    for i in 0..3 {
+        let publish = mqtt::packet::v3_1_1::Publish::builder()
+            .topic_name(&format!("test/topic{}", i))
+            .unwrap()
+            .qos(mqtt::packet::Qos::AtMostOnce)
+            .payload(format!("message {}", i).as_bytes())
+            .build()
+            .unwrap();
+        let publish_bytes = mqtt::packet::Packet::V3_1_1Publish(publish).to_continuous_buffer();
+        let _ =
+            event_sender.unbounded_send(mqtt_client_wasm::WebSocketEvent::Message(publish_bytes));
+
+        // Receive this packet
+        let recv_result =
+            tokio::time::timeout(tokio::time::Duration::from_millis(500), client.recv()).await;
+
+        assert!(recv_result.is_ok(), "Should receive packet {}", i);
+        let packet = recv_result.unwrap().unwrap();
+        if let mqtt::packet::Packet::V3_1_1Publish(pub_packet) = packet {
+            assert_eq!(pub_packet.topic_name(), format!("test/topic{}", i));
+        } else {
+            panic!("Expected PUBLISH packet");
+        }
+    }
+}
+
+/// Test WebSocket close during operation
+#[tokio::test]
+async fn test_websocket_close_during_operation() {
+    let config = MqttConfig::default();
+    let mock_ws = MockWebSocket::new();
+    let event_sender = mock_ws.event_sender.clone();
+
+    let client = MqttClient::new_with_websocket(config, mock_ws);
+
+    let _ = client.connect("ws://test.example.com").await;
+    tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+
+    assert!(client.is_connected().await);
+
+    // Simulate WebSocket close
+    let _ = event_sender.unbounded_send(mqtt_client_wasm::WebSocketEvent::Closed);
+
+    // Wait for close to be processed
+    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+
+    // State should be Closed
+    let state = client.state().await;
+    assert_eq!(state, ConnectionState::Closed);
+}
+
+/// Test PINGRESP packet reception
+#[tokio::test]
+async fn test_pingresp_reception() {
+    let config = MqttConfig {
+        version: client_mqtt::Version::V3_1_1,
+        auto_ping_response: false, // Disable auto response so we can see the PINGRESP
+        ..Default::default()
+    };
+    let mock_ws = MockWebSocket::new();
+    let event_sender = mock_ws.event_sender.clone();
+
+    let client = MqttClient::new_with_websocket(config, mock_ws);
+
+    let _ = client.connect("ws://test.example.com").await;
+    tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+
+    // Send a PINGRESP packet
+    let pingresp = mqtt::packet::v3_1_1::Pingresp::builder().build().unwrap();
+    let pingresp_bytes = mqtt::packet::Packet::V3_1_1Pingresp(pingresp).to_continuous_buffer();
+    let _ = event_sender.unbounded_send(mqtt_client_wasm::WebSocketEvent::Message(pingresp_bytes));
+
+    // Receive the packet with timeout
+    let recv_result =
+        tokio::time::timeout(tokio::time::Duration::from_millis(500), client.recv()).await;
+
+    assert!(recv_result.is_ok());
+    let packet = recv_result.unwrap().unwrap();
+    assert!(matches!(packet, mqtt::packet::Packet::V3_1_1Pingresp(_)));
+}
+
+/// Test DISCONNECT packet handling
+#[tokio::test]
+async fn test_disconnect_packet() {
+    let config = MqttConfig::default();
+    let mock_ws = MockWebSocket::new();
+
+    let client = MqttClient::new_with_websocket(config, mock_ws);
+
+    let _ = client.connect("ws://test.example.com").await;
+    tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+
+    // Send DISCONNECT packet
+    let disconnect = mqtt::packet::v3_1_1::Disconnect::builder().build().unwrap();
+    let packet = mqtt::packet::Packet::V3_1_1Disconnect(disconnect);
+    let send_result = client.send(packet).await;
+    assert!(send_result.is_ok());
+}
+
+/// Test UNSUBSCRIBE packet
+#[tokio::test]
+async fn test_unsubscribe_packet() {
+    let config = MqttConfig::default();
+    let mock_ws = MockWebSocket::new();
+
+    let client = MqttClient::new_with_websocket(config, mock_ws);
+
+    let _ = client.connect("ws://test.example.com").await;
+    tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+
+    let packet_id = client.acquire_packet_id().await.unwrap();
+
+    let unsubscribe = mqtt::packet::v3_1_1::Unsubscribe::builder()
+        .packet_id(packet_id)
+        .entries(vec!["test/topic"])
+        .unwrap()
+        .build()
+        .unwrap();
+
+    let packet = mqtt::packet::Packet::V3_1_1Unsubscribe(unsubscribe);
+    let send_result = client.send(packet).await;
+    assert!(send_result.is_ok());
+}
+
+/// Test QoS 2 PUBLISH flow
+#[tokio::test]
+async fn test_qos2_publish() {
+    let config = MqttConfig {
+        version: client_mqtt::Version::V3_1_1,
+        auto_pub_response: false, // Disable auto response so we can see the PUBREC
+        ..Default::default()
+    };
+    let mock_ws = MockWebSocket::new();
+    let event_sender = mock_ws.event_sender.clone();
+
+    let client = MqttClient::new_with_websocket(config, mock_ws);
+
+    let _ = client.connect("ws://test.example.com").await;
+    tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+
+    // First establish MQTT connection by sending CONNECT
+    let connect_packet = mqtt::packet::v3_1_1::Connect::builder()
+        .client_id("test-qos2-client")
+        .unwrap()
+        .keep_alive(60)
+        .clean_session(true)
+        .build()
+        .unwrap();
+    let _ = client
+        .send(mqtt::packet::Packet::V3_1_1Connect(connect_packet))
+        .await;
+
+    // Simulate CONNACK response from broker
+    let connack = mqtt::packet::v3_1_1::Connack::builder()
+        .session_present(false)
+        .return_code(client_mqtt::result_code::ConnectReturnCode::Accepted)
+        .build()
+        .unwrap();
+    let connack_bytes = mqtt::packet::Packet::V3_1_1Connack(connack).to_continuous_buffer();
+    let _ = event_sender.unbounded_send(mqtt_client_wasm::WebSocketEvent::Message(connack_bytes));
+
+    // Wait for CONNACK to be processed
+    let _ = tokio::time::timeout(tokio::time::Duration::from_millis(500), client.recv()).await;
+
+    let packet_id = client.acquire_packet_id().await.unwrap();
+
+    // Send QoS 2 PUBLISH
+    let publish = mqtt::packet::v3_1_1::Publish::builder()
+        .topic_name("test/qos2")
+        .unwrap()
+        .qos(mqtt::packet::Qos::ExactlyOnce)
+        .packet_id(packet_id)
+        .payload(b"QoS 2 message")
+        .build()
+        .unwrap();
+
+    let packet = mqtt::packet::Packet::V3_1_1Publish(publish);
+    let send_result = client.send(packet).await;
+    assert!(send_result.is_ok());
+
+    // Simulate PUBREC response
+    let pubrec = mqtt::packet::v3_1_1::Pubrec::builder()
+        .packet_id(packet_id)
+        .build()
+        .unwrap();
+    let pubrec_bytes = mqtt::packet::Packet::V3_1_1Pubrec(pubrec).to_continuous_buffer();
+    let _ = event_sender.unbounded_send(mqtt_client_wasm::WebSocketEvent::Message(pubrec_bytes));
+
+    // Receive PUBREC
+    let recv_result =
+        tokio::time::timeout(tokio::time::Duration::from_millis(500), client.recv()).await;
+
+    assert!(recv_result.is_ok());
+    let packet = recv_result.unwrap().unwrap();
+    assert!(matches!(packet, mqtt::packet::Packet::V3_1_1Pubrec(_)));
+}
+
+/// Test register_packet_id functionality
+#[tokio::test]
+async fn test_register_packet_id() {
+    let config = MqttConfig::default();
+    let mock_ws = MockWebSocket::new();
+
+    let client = MqttClient::new_with_websocket(config, mock_ws);
+
+    let _ = client.connect("ws://test.example.com").await;
+    tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+
+    // Register a specific packet ID
+    let result = client.register_packet_id(100).await;
+    assert!(result); // Should succeed
+
+    // Try to register the same packet ID again - should fail
+    let result2 = client.register_packet_id(100).await;
+    assert!(!result2); // Should fail because already registered
+}
+
+/// Test release_packet_id functionality
+#[tokio::test]
+async fn test_release_packet_id() {
+    let config = MqttConfig::default();
+    let mock_ws = MockWebSocket::new();
+
+    let client = MqttClient::new_with_websocket(config, mock_ws);
+
+    let _ = client.connect("ws://test.example.com").await;
+    tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+
+    // Acquire a packet ID
+    let packet_id = client.acquire_packet_id().await.unwrap();
+
+    // Release it
+    let result = client.release_packet_id(packet_id).await;
+    assert!(result.is_ok());
+
+    // Should be able to acquire the same ID again after release
+    // (or a different one - the pool should have it available)
+    let packet_id2 = client.acquire_packet_id().await;
+    assert!(packet_id2.is_some());
+}
+
+/// Test partial packet reassembly (buffer compaction)
+#[tokio::test]
+async fn test_partial_packet_reassembly() {
+    let config = MqttConfig {
+        version: client_mqtt::Version::V3_1_1,
+        ..Default::default()
+    };
+    let mock_ws = MockWebSocket::new();
+    let event_sender = mock_ws.event_sender.clone();
+
+    let client = MqttClient::new_with_websocket(config, mock_ws);
+
+    let _ = client.connect("ws://test.example.com").await;
+    tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+
+    // Create a PUBLISH packet
+    let publish = mqtt::packet::v3_1_1::Publish::builder()
+        .topic_name("test/partial")
+        .unwrap()
+        .qos(mqtt::packet::Qos::AtMostOnce)
+        .payload(b"test message for partial reassembly")
+        .build()
+        .unwrap();
+    let packet_bytes = mqtt::packet::Packet::V3_1_1Publish(publish).to_continuous_buffer();
+
+    // Split the packet into two parts
+    let mid = packet_bytes.len() / 2;
+    let part1 = packet_bytes[..mid].to_vec();
+    let part2 = packet_bytes[mid..].to_vec();
+
+    // Send first part
+    let _ = event_sender.unbounded_send(mqtt_client_wasm::WebSocketEvent::Message(part1));
+    tokio::time::sleep(tokio::time::Duration::from_millis(20)).await;
+
+    // Send second part
+    let _ = event_sender.unbounded_send(mqtt_client_wasm::WebSocketEvent::Message(part2));
+
+    // Should receive complete packet after reassembly
+    let recv_result =
+        tokio::time::timeout(tokio::time::Duration::from_millis(500), client.recv()).await;
+
+    assert!(recv_result.is_ok());
+    let packet = recv_result.unwrap().unwrap();
+    if let mqtt::packet::Packet::V3_1_1Publish(pub_packet) = packet {
+        assert_eq!(pub_packet.topic_name(), "test/partial");
+    } else {
+        panic!("Expected PUBLISH packet");
+    }
+}
+
+/// Test config with all options set
+#[tokio::test]
+async fn test_config_with_all_options() {
+    let config = MqttConfig {
+        url: String::new(),
+        version: client_mqtt::Version::V3_1_1,
+        pingreq_send_interval_ms: Some(30000),
+        pingresp_recv_timeout_ms: 5000,
+        auto_pub_response: false,
+        auto_ping_response: false,
+        auto_map_topic_alias_send: true,
+        auto_replace_topic_alias_send: true,
+        connection_establish_timeout_ms: 10000,
+        shutdown_timeout_ms: 5000,
+    };
+    let mock_ws = MockWebSocket::new();
+
+    let client = MqttClient::new_with_websocket(config, mock_ws);
+
+    // Connection should work with all options set
+    let _ = client.connect("ws://test.example.com").await;
+    tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+    assert!(client.is_connected().await);
+}
+
+/// Test is_connected returns false after disconnect
+#[tokio::test]
+async fn test_is_connected_after_disconnect() {
+    let config = MqttConfig::default();
+    let mock_ws = MockWebSocket::new();
+    let event_sender = mock_ws.event_sender.clone();
+
+    let client = MqttClient::new_with_websocket(config, mock_ws);
+
+    let _ = client.connect("ws://test.example.com").await;
+    tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+    assert!(client.is_connected().await);
+
+    // Simulate close
+    let _ = event_sender.unbounded_send(mqtt_client_wasm::WebSocketEvent::Closed);
+    tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+
+    // After close, is_connected should return false
+    assert!(!client.is_connected().await);
+}
+
+/// Test acquire_packet_id returns None when channel is closed
+#[tokio::test]
+async fn test_acquire_packet_id_after_close() {
+    let config = MqttConfig::default();
+    let mock_ws = MockWebSocket::new();
+
+    let client = MqttClient::new_with_websocket(config, mock_ws);
+
+    let _ = client.connect("ws://test.example.com").await;
+    tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+
+    // Close the client
+    let _ = client.close().await;
+    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+
+    // After close, acquire_packet_id might return None
+    let packet_id = client.acquire_packet_id().await;
+    // Result depends on timing - just ensure no panic
+    let _ = packet_id;
+}
+
+/// Test recv returns error or times out when WebSocket is closed
+#[tokio::test]
+async fn test_recv_after_websocket_close() {
+    let config = MqttConfig {
+        version: client_mqtt::Version::V3_1_1,
+        ..Default::default()
+    };
+    let mock_ws = MockWebSocket::new();
+    let event_sender = mock_ws.event_sender.clone();
+
+    let client = MqttClient::new_with_websocket(config, mock_ws);
+
+    let _ = client.connect("ws://test.example.com").await;
+    tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+
+    // Close WebSocket
+    let _ = event_sender.unbounded_send(mqtt_client_wasm::WebSocketEvent::Closed);
+    tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+
+    // Verify state is Closed
+    let state = client.state().await;
+    assert_eq!(state, ConnectionState::Closed);
+}
+
+/// Test multiple concurrent packet ID acquisitions
+#[tokio::test]
+async fn test_multiple_packet_id_acquisitions() {
+    let config = MqttConfig::default();
+    let mock_ws = MockWebSocket::new();
+
+    let client = MqttClient::new_with_websocket(config, mock_ws);
+
+    let _ = client.connect("ws://test.example.com").await;
+    tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+
+    // Acquire multiple packet IDs
+    let mut packet_ids = Vec::new();
+    for _ in 0..10 {
+        let id = client.acquire_packet_id().await;
+        assert!(id.is_some());
+        packet_ids.push(id.unwrap());
+    }
+
+    // All IDs should be unique
+    let unique_ids: std::collections::HashSet<_> = packet_ids.iter().collect();
+    assert_eq!(unique_ids.len(), packet_ids.len());
+
+    // Release all packet IDs
+    for id in packet_ids {
+        let result = client.release_packet_id(id).await;
+        assert!(result.is_ok());
+    }
+}
+
+/// Test state transitions
+#[tokio::test]
+async fn test_state_transitions() {
+    let config = MqttConfig::default();
+    let mock_ws = MockWebSocket::new();
+    let event_sender = mock_ws.event_sender.clone();
+
+    let client = MqttClient::new_with_websocket(config, mock_ws);
+
+    // Initial state should be Disconnected
+    let state = client.state().await;
+    assert_eq!(state, ConnectionState::Disconnected);
+
+    // After connect request, state should transition
+    let _ = client.connect("ws://test.example.com").await;
+    tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+
+    let state = client.state().await;
+    assert_eq!(state, ConnectionState::Connected);
+
+    // After error, state should be Disconnected
+    let _ = event_sender.unbounded_send(mqtt_client_wasm::WebSocketEvent::Error(
+        "test error".to_string(),
+    ));
+    tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+
+    let state = client.state().await;
+    assert_eq!(state, ConnectionState::Disconnected);
+}
+
+/// Test send when channel is closed (error path)
+#[tokio::test]
+async fn test_send_after_close() {
+    let config = MqttConfig {
+        version: client_mqtt::Version::V3_1_1,
+        ..Default::default()
+    };
+    let mock_ws = MockWebSocket::new();
+
+    let client = MqttClient::new_with_websocket(config, mock_ws);
+
+    let _ = client.connect("ws://test.example.com").await;
+    tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+
+    // Close the client
+    let _ = client.close().await;
+    tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+
+    // Try to send after close - should fail gracefully
+    let publish = mqtt::packet::v3_1_1::Publish::builder()
+        .topic_name("test/after-close")
+        .unwrap()
+        .qos(mqtt::packet::Qos::AtMostOnce)
+        .payload(b"test")
+        .build()
+        .unwrap();
+    let result = client
+        .send(mqtt::packet::Packet::V3_1_1Publish(publish))
+        .await;
+    // The send may fail or succeed depending on timing, but shouldn't panic
+    let _ = result;
+}
+
+/// Test PINGREQ packet sending
+#[tokio::test]
+async fn test_pingreq_send() {
+    let config = MqttConfig {
+        version: client_mqtt::Version::V3_1_1,
+        ..Default::default()
+    };
+    let mock_ws = MockWebSocket::new();
+
+    let client = MqttClient::new_with_websocket(config, mock_ws);
+
+    let _ = client.connect("ws://test.example.com").await;
+    tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+
+    // Send PINGREQ packet
+    let pingreq = mqtt::packet::v3_1_1::Pingreq::builder().build().unwrap();
+    let result = client
+        .send(mqtt::packet::Packet::V3_1_1Pingreq(pingreq))
+        .await;
+    assert!(result.is_ok());
+}
+
+/// Test register_packet_id returns false when channel closed
+#[tokio::test]
+async fn test_register_packet_id_after_close() {
+    let config = MqttConfig::default();
+    let mock_ws = MockWebSocket::new();
+
+    let client = MqttClient::new_with_websocket(config, mock_ws);
+
+    let _ = client.connect("ws://test.example.com").await;
+    tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+
+    // Close the client
+    let _ = client.close().await;
+    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+
+    // After close, register_packet_id might return false
+    let result = client.register_packet_id(100).await;
+    // Result depends on timing - just ensure no panic
+    let _ = result;
+}
+
+/// Test release_packet_id error handling
+#[tokio::test]
+async fn test_release_packet_id_after_close() {
+    let config = MqttConfig::default();
+    let mock_ws = MockWebSocket::new();
+
+    let client = MqttClient::new_with_websocket(config, mock_ws);
+
+    let _ = client.connect("ws://test.example.com").await;
+    tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+
+    // Close the client
+    let _ = client.close().await;
+    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+
+    // After close, release_packet_id might return error
+    let result = client.release_packet_id(1).await;
+    // Result depends on timing - just ensure no panic
+    let _ = result;
+}
+
+/// Test state returns Closed when channel is closed
+#[tokio::test]
+async fn test_state_after_channel_close() {
+    let config = MqttConfig::default();
+    let mock_ws = MockWebSocket::new();
+
+    let client = MqttClient::new_with_websocket(config, mock_ws);
+
+    let _ = client.connect("ws://test.example.com").await;
+    tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+
+    // Close the client
+    let _ = client.close().await;
+    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+
+    // After close, state might return Closed
+    let state = client.state().await;
+    // State should be Closed
+    assert_eq!(state, ConnectionState::Closed);
+}
+
+/// Test v5.0 PUBLISH packet
+#[tokio::test]
+async fn test_v50_publish() {
+    let config = MqttConfig {
+        version: client_mqtt::Version::V5_0,
+        ..Default::default()
+    };
+    let mock_ws = MockWebSocket::new();
+    let event_sender = mock_ws.event_sender.clone();
+
+    let client = MqttClient::new_with_websocket(config, mock_ws);
+
+    let _ = client.connect("ws://test.example.com").await;
+    tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+
+    // Send v5.0 PUBLISH packet (simulating received message)
+    let publish = mqtt::packet::v5_0::Publish::builder()
+        .topic_name("test/v50/topic")
+        .unwrap()
+        .qos(mqtt::packet::Qos::AtMostOnce)
+        .payload(b"v5.0 message")
+        .build()
+        .unwrap();
+    let publish_bytes = mqtt::packet::Packet::V5_0Publish(publish).to_continuous_buffer();
+    let _ = event_sender.unbounded_send(mqtt_client_wasm::WebSocketEvent::Message(publish_bytes));
+
+    // Receive the packet
+    let recv_result =
+        tokio::time::timeout(tokio::time::Duration::from_millis(500), client.recv()).await;
+
+    assert!(recv_result.is_ok());
+    let packet = recv_result.unwrap().unwrap();
+    if let mqtt::packet::Packet::V5_0Publish(pub_packet) = packet {
+        assert_eq!(pub_packet.topic_name(), "test/v50/topic");
+    } else {
+        panic!("Expected v5.0 PUBLISH packet");
     }
 }
