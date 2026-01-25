@@ -41,5 +41,9 @@ Cargo.lock
 .claude/
 .vscode/
 
-
 CLAUDE.md
+
+# Coverage
+lcov.info
+*.profraw
+*.profdata
