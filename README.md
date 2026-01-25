@@ -13,7 +13,50 @@ This library provides a WebSocket-based MQTT client specifically designed for br
 - **Interactive Client Tool**: Ready-to-use HTML client for testing and debugging
 - **Sequence Test Tool**: Automated MQTT packet sequence testing
 
-## Quick Start
+## Installation
+
+### npm (Recommended for bundler projects)
+
+```bash
+npm install @redboltz/mqtt-client-wasm
+```
+
+Then import in your JavaScript/TypeScript:
+
+```javascript
+import init, { WasmMqttClient, WasmMqttConfig, WasmPacketType } from '@redboltz/mqtt-client-wasm';
+
+async function main() {
+    await init();
+    // ... use the client
+}
+```
+
+Works with webpack, vite, rollup, and other bundlers.
+
+### Direct Download (No bundler)
+
+Download the latest release from [GitHub Releases](https://github.com/redboltz/mqtt-client-wasm/releases) and include in your HTML:
+
+```html
+<script type="module">
+    import init, { WasmMqttClient, WasmMqttConfig } from './pkg/mqtt_client_wasm.js';
+    await init();
+    // ... use the client
+</script>
+```
+
+### Build from Source
+
+```bash
+# For direct browser use (ES modules)
+wasm-pack build --target web
+
+# For bundlers (npm-style)
+wasm-pack build --target bundler
+```
+
+## Quick Start (Demo)
 
 ### 1. Build WASM Package
 

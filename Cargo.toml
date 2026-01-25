@@ -2,9 +2,14 @@
 name = "mqtt-client-wasm"
 version = "0.1.0"
 edition = "2021"
-description = "MQTT client for WASM using WebSocket transport"
+description = "MQTT v3.1.1/v5.0 client for browsers using WebSocket (ws/wss) transport, compiled to WebAssembly"
 license = "MIT"
-repository = "https://github.com/username/mqtt-client-wasm"
+repository = "https://github.com/redboltz/mqtt-client-wasm"
+homepage = "https://github.com/redboltz/mqtt-client-wasm"
+documentation = "https://github.com/redboltz/mqtt-client-wasm#readme"
+keywords = ["mqtt", "wasm", "websocket", "browser", "iot"]
+categories = ["wasm", "web-programming", "network-programming"]
+readme = "README.md"
 
 [lib]
 crate-type = ["cdylib", "rlib"]
@@ -65,3 +70,9 @@ native = ["tokio"]
 
 [package.metadata.wasm-pack.profile.release]
 wasm-opt = ["-Oz", "--enable-mutable-globals"]
+
+# npm package configuration (used by wasm-pack)
+[package.metadata.wasm-pack.profile.release.wasm-bindgen]
+debug-js-glue = false
+demangle-name-section = true
+dwarf-debug-info = false
