@@ -3,9 +3,13 @@
   "version": "0.1.0",
   "description": "MQTT v3.1.1/v5.0 client for browsers and Node.js using WebSocket/TCP/TLS transport, compiled to WebAssembly",
   "license": "MIT",
+  "author": "Takatoshi Kondo",
   "repository": {
     "type": "git",
-    "url": "https://github.com/redboltz/mqtt-client-wasm"
+    "url": "git+https://github.com/redboltz/mqtt-client-wasm.git"
+  },
+  "bugs": {
+    "url": "https://github.com/redboltz/mqtt-client-wasm/issues"
   },
   "homepage": "https://github.com/redboltz/mqtt-client-wasm",
   "keywords": [
