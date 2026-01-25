@@ -5,7 +5,7 @@
 //! Optional fields can be omitted (null/undefined in JavaScript).
 
 use crate::{mqtt, MqttClient, MqttConfig};
-use mqtt::packet::{Properties, Property};
+use mqtt::packet::{GenericPacketTrait, Properties, Property};
 use serde::Deserialize;
 use wasm_bindgen::prelude::*;
 
@@ -1161,6 +1161,42 @@ impl WasmMqttPacket {
         format!("{:?}", self.inner.packet_type())
     }
 
+    /// Serialize packet to bytes
+    #[wasm_bindgen(js_name = toBytes)]
+    pub fn to_bytes(&self) -> Vec<u8> {
+        self.inner.to_continuous_buffer()
+    }
+
+    /// Parse packet from bytes
+    /// Note: This creates a temporary MQTT connection to use its parser
+    #[wasm_bindgen(js_name = fromBytes)]
+    pub fn from_bytes(data: &[u8], version: &str) -> Result<WasmMqttPacket, JsValue> {
+        use mqtt_protocol_core::mqtt as mqtt_core;
+
+        let mqtt_version = match version {
+            "5.0" | "v5.0" | "V5_0" => mqtt_core::Version::V5_0,
+            _ => mqtt_core::Version::V3_1_1,
+        };
+
+        // Create a temporary connection for parsing
+        let mut connection = mqtt_core::Connection::<mqtt_core::role::Client>::new(mqtt_version);
+        let mut cursor = mqtt_core::common::Cursor::new(data);
+
+        // Use the connection's recv method to parse
+        let events = connection.recv(&mut cursor);
+
+        // Find the received packet in events
+        for event in events {
+            if let mqtt_core::connection::Event::NotifyPacketReceived(packet) = event {
+                return Ok(WasmMqttPacket { inner: packet });
+            }
+        }
+
+        Err(JsValue::from_str(
+            "Failed to parse packet: no valid packet found",
+        ))
+    }
+
     // ------------------------------------------------------------------------
     // V3.1.1 Packet Constructors
     // ------------------------------------------------------------------------
@@ -1961,6 +1997,19 @@ impl WasmMqttConfig {
     }
 }
 
+/// Non-wasm_bindgen accessor methods for WasmMqttConfig
+impl WasmMqttConfig {
+    /// Get the inner config (for internal use)
+    pub fn into_inner(self) -> MqttConfig {
+        self.inner
+    }
+
+    /// Get the version
+    pub fn version(&self) -> mqtt::Version {
+        self.inner.version
+    }
+}
+
 /// WASM-friendly wrapper around MqttClient
 #[wasm_bindgen]
 pub struct WasmMqttClient {
@@ -2460,6 +2509,17 @@ impl WasmMqttClient {
                 }
             }
             _ => JsValue::NULL,
+        }
+    }
+}
+
+/// Non-wasm_bindgen methods for internal use
+impl WasmMqttClient {
+    /// Create a WasmMqttClient from an existing MqttClient (internal use)
+    pub fn from_client(client: MqttClient, version: mqtt::Version) -> WasmMqttClient {
+        WasmMqttClient {
+            inner: client,
+            version,
         }
     }
 }
