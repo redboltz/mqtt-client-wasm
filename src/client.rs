@@ -52,9 +52,6 @@ pub enum Request {
         packet_id: u16,
         reply: oneshot::Sender<Result<()>>,
     },
-    /// Timer expired (internal)
-    #[allow(dead_code)]
-    TimerExpired { timer_kind: String },
 }
 
 /// MQTT client with clean channel-based design
@@ -256,60 +253,6 @@ impl MqttProcessor {
                 let _ = self.handle_mqtt_events(events);
                 let _ = reply.send(Ok(()));
             }
-            Request::TimerExpired { timer_kind } => {
-                #[cfg(target_arch = "wasm32")]
-                web_sys::console::log_1(
-                    &format!("🚨 Processing timer expiration: {}", timer_kind).into(),
-                );
-
-                // Check if connection is closed - if so, ignore all timers
-                if matches!(self.state, ConnectionState::Closed) {
-                    #[cfg(target_arch = "wasm32")]
-                    web_sys::console::log_1(
-                        &format!("⚠️ Connection closed, ignoring timer: {}", timer_kind).into(),
-                    );
-                    return true; // Continue processing
-                }
-
-                // Check if timer was cancelled - if so, ignore the expiration
-                if !self.active_timers.contains(&timer_kind) {
-                    #[cfg(target_arch = "wasm32")]
-                    web_sys::console::log_1(
-                        &format!("⚠️ Timer {} was cancelled, ignoring expiration", timer_kind)
-                            .into(),
-                    );
-                    return true; // Continue processing
-                }
-
-                // Remove the timer from active_timers since it has now expired
-                self.active_timers.remove(&timer_kind);
-                #[cfg(target_arch = "wasm32")]
-                web_sys::console::log_1(
-                    &format!(
-                        "✅ Timer {} expired and removed from active timers",
-                        timer_kind
-                    )
-                    .into(),
-                );
-
-                // Handle timer expiration based on timer type string
-                if timer_kind.contains("PingreqSend") {
-                    let events = self
-                        .mqtt_connection
-                        .notify_timer_fired(mqtt::connection::TimerKind::PingreqSend);
-                    let _ = self.handle_mqtt_events(events);
-                } else if timer_kind.contains("PingreqRecv") {
-                    let events = self
-                        .mqtt_connection
-                        .notify_timer_fired(mqtt::connection::TimerKind::PingreqRecv);
-                    let _ = self.handle_mqtt_events(events);
-                } else if timer_kind.contains("PingrespRecv") {
-                    let events = self
-                        .mqtt_connection
-                        .notify_timer_fired(mqtt::connection::TimerKind::PingrespRecv);
-                    let _ = self.handle_mqtt_events(events);
-                }
-            }
         }
         true
     }
@@ -396,11 +339,6 @@ impl MqttProcessor {
                     let events = self
                         .mqtt_connection
                         .notify_timer_fired(mqtt::connection::TimerKind::PingreqSend);
-                    let _ = self.handle_mqtt_events(events);
-                } else if timer_kind.contains("PingreqRecv") {
-                    let events = self
-                        .mqtt_connection
-                        .notify_timer_fired(mqtt::connection::TimerKind::PingreqRecv);
                     let _ = self.handle_mqtt_events(events);
                 } else if timer_kind.contains("PingrespRecv") {
                     let events = self
