@@ -1,21 +1,19 @@
 //! Clean channel-based MQTT client implementation
 //!
-//! This implementation uses pure channel communication and abstracted WebSocket
+//! This implementation uses pure channel communication and abstracted underlying layer
 //! to ensure complete separation and testability
 
 #[cfg(target_arch = "wasm32")]
+use crate::log;
+#[cfg(target_arch = "wasm32")]
 use crate::websocket::BrowserWebSocket;
 use crate::{error::*, types::*, websocket::*};
-#[cfg(target_arch = "wasm32")]
-use crate::{log, platform};
 use futures::channel::{mpsc, oneshot};
 use futures::stream::StreamExt;
 use futures::{select, FutureExt};
 use mqtt_protocol_core::mqtt;
 use mqtt_protocol_core::mqtt::prelude::*;
-use std::collections::HashMap;
-#[cfg(not(target_arch = "wasm32"))]
-use std::time::{Duration, Instant};
+use std::collections::HashSet;
 
 /// Requests from public API to internal processor
 #[derive(Debug)]
@@ -75,11 +73,9 @@ struct MqttProcessor {
     buffer_size: usize,
     consumed_bytes: usize,
 
-    // Timer management
-    #[cfg(not(target_arch = "wasm32"))]
-    active_timers: HashMap<String, (Instant, u64)>,
-    #[cfg(target_arch = "wasm32")]
-    active_timers: HashMap<String, (f64, u64, Option<i32>)>, // (start_time, duration_ms, js_timer_id)
+    // Timer management - tracks which timers are active
+    // Actual timer handling is done by the underlying layer
+    active_timers: HashSet<String>,
 
     // Packet handling
     packet_sender: mpsc::UnboundedSender<mqtt::packet::Packet>,
@@ -88,8 +84,8 @@ struct MqttProcessor {
     undelivered_packet: Option<mqtt::packet::Packet>,
 
     // WebSocket communication
-    websocket_events: mpsc::UnboundedReceiver<WebSocketEvent>,
-    websocket_commands: mpsc::UnboundedSender<WebSocketCommand>,
+    websocket_events: mpsc::UnboundedReceiver<UnderlyingLayerEvent>,
+    websocket_commands: mpsc::UnboundedSender<UnderlyingLayerCommand>,
 
     // Request sender for timer callbacks
     #[allow(dead_code)]
@@ -97,7 +93,7 @@ struct MqttProcessor {
 }
 
 impl MqttProcessor {
-    fn new<W: WebSocketInterface>(
+    fn new<W: UnderlyingLayerInterface>(
         config: MqttConfig,
         mut websocket: W,
         request_sender: mpsc::UnboundedSender<Request>,
@@ -114,7 +110,7 @@ impl MqttProcessor {
             read_buffer: Vec::with_capacity(8192),
             buffer_size: 0,
             consumed_bytes: 0,
-            active_timers: HashMap::new(),
+            active_timers: HashSet::new(),
             packet_sender,
             packet_receiver,
             pending_recv_requests: Vec::new(),
@@ -276,7 +272,7 @@ impl MqttProcessor {
                 }
 
                 // Check if timer was cancelled - if so, ignore the expiration
-                if !self.active_timers.contains_key(&timer_kind) {
+                if !self.active_timers.contains(&timer_kind) {
                     #[cfg(target_arch = "wasm32")]
                     web_sys::console::log_1(
                         &format!("⚠️ Timer {} was cancelled, ignoring expiration", timer_kind)
@@ -319,17 +315,17 @@ impl MqttProcessor {
     }
 
     /// Handle WebSocket events
-    async fn handle_websocket_event(&mut self, event: WebSocketEvent) {
+    async fn handle_websocket_event(&mut self, event: UnderlyingLayerEvent) {
         #[cfg(target_arch = "wasm32")]
         web_sys::console::log_1(&format!("Handling WebSocket event: {:?}", event).into());
 
         match event {
-            WebSocketEvent::Connected => {
+            UnderlyingLayerEvent::Connected => {
                 #[cfg(target_arch = "wasm32")]
                 web_sys::console::log_1(&"WebSocket Connected event - updating state".into());
                 self.state = ConnectionState::Connected;
             }
-            WebSocketEvent::Message(data) => {
+            UnderlyingLayerEvent::Message(data) => {
                 #[cfg(target_arch = "wasm32")]
                 web_sys::console::log_1(
                     &format!(
@@ -340,12 +336,12 @@ impl MqttProcessor {
                 );
                 self.process_incoming_data(data);
             }
-            WebSocketEvent::Error(_error) => {
+            UnderlyingLayerEvent::Error(_error) => {
                 #[cfg(target_arch = "wasm32")]
                 web_sys::console::log_1(&format!("WebSocket Error event: {}", _error).into());
                 self.state = ConnectionState::Disconnected;
             }
-            WebSocketEvent::Closed => {
+            UnderlyingLayerEvent::Closed => {
                 #[cfg(target_arch = "wasm32")]
                 web_sys::console::log_1(&"WebSocket Closed event - updating state".into());
                 self.state = ConnectionState::Closed;
@@ -356,6 +352,67 @@ impl MqttProcessor {
                 self.active_timers.clear();
                 #[cfg(target_arch = "wasm32")]
                 web_sys::console::log_1(&"All timers cleared on connection close".into());
+            }
+            UnderlyingLayerEvent::TimerExpired(timer_kind) => {
+                // Handle timer expiration from underlying layer
+                #[cfg(target_arch = "wasm32")]
+                log!("Timer expired event received: {}", timer_kind);
+                #[cfg(not(target_arch = "wasm32"))]
+                println!("Timer expired event received: {}", timer_kind);
+
+                // Check if connection is closed - if so, ignore all timers
+                if matches!(self.state, ConnectionState::Closed) {
+                    #[cfg(target_arch = "wasm32")]
+                    log!("Connection closed, ignoring timer: {}", timer_kind);
+                    #[cfg(not(target_arch = "wasm32"))]
+                    println!("Connection closed, ignoring timer: {}", timer_kind);
+                    return;
+                }
+
+                // Check if timer was cancelled - if so, ignore the expiration
+                if !self.active_timers.contains(&timer_kind) {
+                    #[cfg(target_arch = "wasm32")]
+                    log!("Timer {} was cancelled, ignoring expiration", timer_kind);
+                    #[cfg(not(target_arch = "wasm32"))]
+                    println!("Timer {} was cancelled, ignoring expiration", timer_kind);
+                    return;
+                }
+
+                // Remove the timer from active_timers since it has now expired
+                self.active_timers.remove(&timer_kind);
+                #[cfg(target_arch = "wasm32")]
+                log!(
+                    "Timer {} expired and removed from active timers",
+                    timer_kind
+                );
+                #[cfg(not(target_arch = "wasm32"))]
+                println!(
+                    "Timer {} expired and removed from active timers",
+                    timer_kind
+                );
+
+                // Handle timer expiration based on timer type string
+                if timer_kind.contains("PingreqSend") {
+                    let events = self
+                        .mqtt_connection
+                        .notify_timer_fired(mqtt::connection::TimerKind::PingreqSend);
+                    let _ = self.handle_mqtt_events(events);
+                } else if timer_kind.contains("PingreqRecv") {
+                    let events = self
+                        .mqtt_connection
+                        .notify_timer_fired(mqtt::connection::TimerKind::PingreqRecv);
+                    let _ = self.handle_mqtt_events(events);
+                } else if timer_kind.contains("PingrespRecv") {
+                    let events = self
+                        .mqtt_connection
+                        .notify_timer_fired(mqtt::connection::TimerKind::PingrespRecv);
+                    let _ = self.handle_mqtt_events(events);
+                } else {
+                    #[cfg(target_arch = "wasm32")]
+                    log!("Unknown timer kind: {}", timer_kind);
+                    #[cfg(not(target_arch = "wasm32"))]
+                    println!("Unknown timer kind: {}", timer_kind);
+                }
             }
         }
     }
@@ -416,7 +473,7 @@ impl MqttProcessor {
 
         let _ = self
             .websocket_commands
-            .unbounded_send(WebSocketCommand::Connect(url.to_string(), reply_arc));
+            .unbounded_send(UnderlyingLayerCommand::Connect(url.to_string(), reply_arc));
 
         Ok(())
     }
@@ -435,7 +492,7 @@ impl MqttProcessor {
     async fn close(&mut self) -> Result<()> {
         let _ = self
             .websocket_commands
-            .unbounded_send(WebSocketCommand::Close);
+            .unbounded_send(UnderlyingLayerCommand::Close);
         self.state = ConnectionState::Closed;
         Ok(())
     }
@@ -501,7 +558,7 @@ impl MqttProcessor {
                     // Send via WebSocket command
                     match self
                         .websocket_commands
-                        .unbounded_send(WebSocketCommand::SendData(buffer))
+                        .unbounded_send(UnderlyingLayerCommand::SendData(buffer))
                     {
                         Ok(_) => {
                             #[cfg(target_arch = "wasm32")]
@@ -526,98 +583,28 @@ impl MqttProcessor {
                 mqtt::connection::Event::RequestTimerReset { kind, duration_ms } => {
                     let kind_str = format!("{:?}", kind);
 
-                    // Check if there's already an active timer of this kind and cancel it
-                    #[cfg(target_arch = "wasm32")]
-                    if let Some((_, _, Some(old_timer_id))) = self.active_timers.remove(&kind_str) {
-                        log!(
-                            "🔄 TIMER RESET: Cancelling existing {} timer (ID: {})",
-                            kind_str,
-                            old_timer_id
-                        );
-                        platform::clear_timeout(old_timer_id);
-                    }
-                    #[cfg(not(target_arch = "wasm32"))]
-                    if self.active_timers.remove(&kind_str).is_some() {
-                        // For non-WASM, we can't cancel but we remove the tracking
-                    }
+                    // Track the timer as active
+                    self.active_timers.insert(kind_str.clone());
 
-                    #[cfg(not(target_arch = "wasm32"))]
-                    let start_time = Instant::now();
-                    #[cfg(target_arch = "wasm32")]
-                    let start_time = platform::date_now();
-
-                    #[cfg(target_arch = "wasm32")]
-                    log!(
-                        "🔥🔥🔥 TIMER RESET: {} for {}ms 🔥🔥🔥",
-                        kind_str,
-                        duration_ms
+                    // Delegate timer handling to underlying layer
+                    // The underlying layer will send TimerExpired event when the timer fires
+                    let _ = self.websocket_commands.unbounded_send(
+                        UnderlyingLayerCommand::TimerReset {
+                            kind: kind_str,
+                            duration_ms,
+                        },
                     );
-
-                    // Start JavaScript timer for WASM
-                    #[cfg(target_arch = "wasm32")]
-                    {
-                        let request_sender = self.request_sender.clone();
-                        let timer_kind_clone = kind_str.clone();
-
-                        // Create the timer and store its ID
-                        let timer_kind_for_callback = timer_kind_clone.clone();
-                        let callback = wasm_bindgen::closure::Closure::wrap(Box::new(move || {
-                            platform::console_log(&format!(
-                                "🚨 TIMER EXPIRED: {} after {}ms 🚨",
-                                timer_kind_for_callback, duration_ms
-                            ));
-
-                            // Send timer expired request back to processor
-                            let _ = request_sender.unbounded_send(Request::TimerExpired {
-                                timer_kind: timer_kind_for_callback.clone(),
-                            });
-                        })
-                            as Box<dyn Fn()>);
-
-                        let timer_id = platform::set_timeout(&callback, duration_ms as i32);
-
-                        // Forget the callback to prevent it from being dropped
-                        callback.forget();
-
-                        log!(
-                            "✅ TIMER SET: {} (ID: {}) for {}ms",
-                            kind_str,
-                            timer_id,
-                            duration_ms
-                        );
-
-                        // Insert the timer with its ID
-                        self.active_timers
-                            .insert(kind_str.clone(), (start_time, duration_ms, Some(timer_id)));
-                    }
-
-                    #[cfg(not(target_arch = "wasm32"))]
-                    {
-                        // Insert the timer without JS timer ID
-                        self.active_timers
-                            .insert(kind_str.clone(), (start_time, duration_ms));
-                    }
                 }
                 mqtt::connection::Event::RequestTimerCancel(kind) => {
                     let kind_str = format!("{:?}", kind);
 
-                    #[cfg(target_arch = "wasm32")]
-                    if let Some((_, _, Some(timer_id))) = self.active_timers.remove(&kind_str) {
-                        log!("🚫 TIMER CANCELLED: {} (ID: {}) 🚫", kind_str, timer_id);
-                        platform::clear_timeout(timer_id);
-                    } else {
-                        log!("🚫 TIMER CANCELLED: {} (was not active) 🚫", kind_str);
-                    }
+                    // Remove from tracking
+                    self.active_timers.remove(&kind_str);
 
-                    #[cfg(not(target_arch = "wasm32"))]
-                    {
-                        let was_active = self.active_timers.remove(&kind_str).is_some();
-                        if was_active {
-                            println!("Timer cancelled: {} (was active)", kind_str);
-                        } else {
-                            println!("Timer cancelled: {} (was not active)", kind_str);
-                        }
-                    }
+                    // Delegate cancellation to underlying layer
+                    let _ = self
+                        .websocket_commands
+                        .unbounded_send(UnderlyingLayerCommand::TimerCancel { kind: kind_str });
                 }
                 mqtt::connection::Event::NotifyError(error) => {
                     eprintln!("MQTT protocol error: {:?}", error);
@@ -625,7 +612,7 @@ impl MqttProcessor {
                 mqtt::connection::Event::RequestClose => {
                     let _ = self
                         .websocket_commands
-                        .unbounded_send(WebSocketCommand::Close);
+                        .unbounded_send(UnderlyingLayerCommand::Close);
                     self.state = ConnectionState::Closed;
                 }
                 _ => {}
@@ -674,67 +661,6 @@ impl MqttProcessor {
         #[cfg(target_arch = "wasm32")]
         log!("Internal state reset complete for reconnection");
     }
-
-    /// Check for expired timers and handle them
-    #[allow(dead_code)]
-    fn check_timers(&mut self) {
-        #[cfg(not(target_arch = "wasm32"))]
-        let now = Instant::now();
-        #[cfg(target_arch = "wasm32")]
-        let now = platform::date_now();
-
-        let mut expired_timers = Vec::new();
-
-        // Find expired timers
-        for (kind_str, timer_data) in &self.active_timers {
-            #[cfg(not(target_arch = "wasm32"))]
-            let (start_time, duration_ms) = timer_data;
-            #[cfg(target_arch = "wasm32")]
-            let (start_time, duration_ms, _timer_id) = timer_data;
-            #[cfg(not(target_arch = "wasm32"))]
-            {
-                let duration = Duration::from_millis(*duration_ms);
-                if now.duration_since(*start_time) >= duration {
-                    expired_timers.push(kind_str.clone());
-                }
-            }
-            #[cfg(target_arch = "wasm32")]
-            {
-                if now - start_time >= *duration_ms as f64 {
-                    expired_timers.push(kind_str.clone());
-                }
-            }
-        }
-
-        // Handle expired timers
-        for kind_str in expired_timers {
-            self.active_timers.remove(&kind_str);
-
-            #[cfg(target_arch = "wasm32")]
-            log!("Timer expired: {}", kind_str);
-
-            // Handle timer expiration based on timer type string
-            if kind_str.contains("PingreqSend") {
-                let events = self
-                    .mqtt_connection
-                    .notify_timer_fired(mqtt::connection::TimerKind::PingreqSend);
-                let _ = self.handle_mqtt_events(events);
-            } else if kind_str.contains("PingreqRecv") {
-                let events = self
-                    .mqtt_connection
-                    .notify_timer_fired(mqtt::connection::TimerKind::PingreqRecv);
-                let _ = self.handle_mqtt_events(events);
-            } else if kind_str.contains("PingrespRecv") {
-                let events = self
-                    .mqtt_connection
-                    .notify_timer_fired(mqtt::connection::TimerKind::PingrespRecv);
-                let _ = self.handle_mqtt_events(events);
-            } else {
-                #[cfg(target_arch = "wasm32")]
-                web_sys::console::log_1(&format!("Unknown timer kind: {}", kind_str).into());
-            }
-        }
-    }
 }
 
 impl MqttClient {
@@ -746,7 +672,7 @@ impl MqttClient {
 
     /// Create new MQTT client with custom WebSocket (for testing)
     #[cfg(target_arch = "wasm32")]
-    pub fn new_with_websocket<W: WebSocketInterface + 'static>(
+    pub fn new_with_websocket<W: UnderlyingLayerInterface + 'static>(
         config: MqttConfig,
         websocket: W,
     ) -> Self {
@@ -784,7 +710,7 @@ impl MqttClient {
 
     /// Create new MQTT client with custom WebSocket (for testing, non-WASM)
     #[cfg(not(target_arch = "wasm32"))]
-    pub fn new_with_websocket<W: WebSocketInterface + Send + 'static>(
+    pub fn new_with_websocket<W: UnderlyingLayerInterface + Send + 'static>(
         config: MqttConfig,
         websocket: W,
     ) -> Self {
@@ -794,14 +720,22 @@ impl MqttClient {
         let (mut processor, mut websocket) =
             MqttProcessor::new(config, websocket, request_sender.clone());
 
-        // Start WebSocket processor
+        // Start WebSocket processor with tokio runtime for timer support
         std::thread::spawn(move || {
-            futures::executor::block_on(websocket.run());
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            rt.block_on(websocket.run());
         });
 
-        // Start MQTT processor
+        // Start MQTT processor with tokio runtime
         std::thread::spawn(move || {
-            futures::executor::block_on(processor.run(request_receiver));
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            rt.block_on(processor.run(request_receiver));
         });
 
         Self { request_sender }
