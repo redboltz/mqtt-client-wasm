@@ -18,6 +18,10 @@ MQTT client library compiled to WebAssembly, supporting both browsers and Node.j
 
 - **MQTT v3.1.1 and v5.0**: Full support for both protocol versions
 - **Multiple Transports**: WebSocket for both platforms, TCP/TLS for Node.js
+- **Protocol State Machine**: Internal state machine automatically handles protocol behavior based on packet exchange
+  - e.g., KeepAlive in CONNECT triggers automatic PINGREQ transmission
+  - e.g., MQTT v5.0 properties (receiveMaximum, maximumPacketSize, topicAliasMaximum, etc.) are internally tracked and enforced
+  - See [mqtt-protocol-core](https://github.com/redboltz/mqtt-protocol-core) for details (Rust)
 - **Low-level Endpoint API**: Direct packet send/recv operations for full control
 - **Auto Response Options**: Configurable automatic handling of PUBACK, PUBREC, PUBREL, PUBCOMP, and PINGRESP
 - **Interactive Client Tool**: Ready-to-use HTML client for testing and debugging (browser)
@@ -95,9 +99,9 @@ const {
 init();
 ```
 
-#### Unified API (Recommended)
+#### Usage
 
-Use `createClientWithTransport()` for the same API as browser. The WASM client handles state machine, timers, and automatic responses.
+Use `createClientWithTransport()` to create a client with a transport. The WASM client handles state machine, timers, and automatic responses (same API as browser).
 
 ```javascript
 const fs = require('fs');
@@ -140,74 +144,34 @@ while (true) {
 }
 ```
 
-#### Raw Transport API (Direct Control)
+#### Transport Types
 
-For direct packet control without the WASM state machine:
-
-#### WebSocket Transport (ws/wss)
-
+**TCP Transport:**
 ```javascript
-// Plain WebSocket (ws://)
+const transport = new NodeTcpTransport();
+await transport.connect('broker.example.com', 1883);
+```
+
+**TLS Transport:**
+```javascript
+const transport = new NodeTlsTransport({
+    ca: fs.readFileSync('ca.pem'),
+});
+await transport.connect('broker.example.com', 8883);
+```
+
+**WebSocket Transport (ws://):**
+```javascript
 const transport = new NodeWebSocketTransport();
 await transport.connect('ws://broker.example.com:8080/');
+```
 
-// Secure WebSocket (wss://) with CA certificate
-const fs = require('fs');
+**WebSocket Secure Transport (wss://):**
+```javascript
 const transport = new NodeWebSocketTransport({
     ca: fs.readFileSync('ca.pem'),
 });
 await transport.connect('wss://broker.example.com:8884/');
-
-// Send/receive raw MQTT packets
-transport.onMessage((data) => {
-    // data is Uint8Array of received MQTT packet
-    const packet = WasmMqttPacket.fromBytes(data, 'v5.0');
-    console.log('Received:', packet.packetType());
-});
-
-// Create and send packets
-const config = new WasmMqttConfig({ version: '5.0' });
-const client = new WasmMqttClient(config);
-const connectPacket = client.newConnectPacket({
-    clientId: 'my-node-client',
-    keepAlive: 60,
-    cleanSession: true,
-});
-transport.send(connectPacket.toBytes());
-```
-
-#### TCP Transport (Node.js only)
-
-```javascript
-const transport = new NodeTcpTransport();
-await transport.connect('broker.example.com', 1883);
-
-transport.onMessage((data) => {
-    // Handle received packets
-});
-
-// Send MQTT packets
-transport.send(connectPacket.toBytes());
-```
-
-#### TLS Transport (Node.js only)
-
-```javascript
-const fs = require('fs');
-
-const transport = new NodeTlsTransport({
-    ca: fs.readFileSync('ca.pem'),
-    // Optional client certificate authentication
-    // cert: fs.readFileSync('client.crt'),
-    // key: fs.readFileSync('client.key'),
-});
-await transport.connect('broker.example.com', 8883);
-
-transport.onMessage((data) => {
-    // Handle received packets
-});
-
-transport.send(connectPacket.toBytes());
 ```
 
 #### TLS Options (for NodeTlsTransport and NodeWebSocketTransport)
