@@ -1,6 +1,6 @@
 {
   "name": "@redboltz/mqtt-client-wasm",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "MQTT v3.1.1/v5.0 client for browsers and Node.js using WebSocket/TCP/TLS transport, compiled to WebAssembly",
   "license": "MIT",
   "author": "Takatoshi Kondo",
@@ -23,17 +23,21 @@
   "exports": {
     ".": {
       "browser": {
-        "import": "./pkg/mqtt_client_wasm.js",
-        "types": "./pkg/mqtt_client_wasm.d.ts"
+        "import": "./pkg-bundler/mqtt_client_wasm.js",
+        "types": "./pkg-bundler/mqtt_client_wasm.d.ts"
       },
       "node": {
         "require": "./nodejs/index.js"
       },
-      "default": "./pkg/mqtt_client_wasm.js"
+      "default": "./pkg-bundler/mqtt_client_wasm.js"
     },
     "./browser": {
-      "import": "./pkg/mqtt_client_wasm.js",
-      "types": "./pkg/mqtt_client_wasm.d.ts"
+      "import": "./pkg-bundler/mqtt_client_wasm.js",
+      "types": "./pkg-bundler/mqtt_client_wasm.d.ts"
+    },
+    "./standalone": {
+      "import": "./pkg-web/mqtt_client_wasm.js",
+      "types": "./pkg-web/mqtt_client_wasm.d.ts"
     },
     "./nodejs": {
       "require": "./nodejs/index.js"
@@ -43,10 +47,11 @@
     }
   },
   "main": "./nodejs/index.js",
-  "browser": "./pkg/mqtt_client_wasm.js",
-  "types": "./pkg/mqtt_client_wasm.d.ts",
+  "browser": "./pkg-bundler/mqtt_client_wasm.js",
+  "types": "./pkg-bundler/mqtt_client_wasm.d.ts",
   "files": [
-    "pkg/",
+    "pkg-bundler/",
+    "pkg-web/",
     "pkg-nodejs/",
     "nodejs/*.js"
   ],

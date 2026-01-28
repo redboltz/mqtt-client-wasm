@@ -11,8 +11,12 @@ if [ "$1" = "--dry-run" ]; then
     echo "Dry run mode - no actual publish will occur"
 fi
 
-echo "Building for browser (bundler target)..."
-wasm-pack build --target bundler
+echo "Building for browser with bundler (bundler target)..."
+wasm-pack build --target bundler --out-dir pkg-bundler
+
+echo ""
+echo "Building for browser standalone (web target)..."
+wasm-pack build --target web --out-dir pkg-web
 
 echo ""
 echo "Building for Node.js (nodejs target)..."
@@ -21,12 +25,15 @@ wasm-pack build --target nodejs --out-dir pkg-nodejs
 # Remove .gitignore files that wasm-pack creates (they contain "*" which blocks npm pack)
 echo ""
 echo "Removing .gitignore files from pkg directories..."
-rm -f pkg/.gitignore pkg-nodejs/.gitignore
+rm -f pkg-bundler/.gitignore pkg-web/.gitignore pkg-nodejs/.gitignore
 
 echo ""
 echo "Package contents:"
-echo "=== pkg/ (browser) ==="
-ls -la pkg/
+echo "=== pkg-bundler/ (browser with bundler) ==="
+ls -la pkg-bundler/
+echo ""
+echo "=== pkg-web/ (browser standalone) ==="
+ls -la pkg-web/
 echo ""
 echo "=== pkg-nodejs/ (Node.js) ==="
 ls -la pkg-nodejs/
@@ -50,8 +57,8 @@ else
     echo "Published successfully!"
 fi
 
-# Rebuild with web target for local www testing
+# Rebuild pkg/ with web target for local www testing (www/pkg symlinks to ../pkg/)
 echo ""
-echo "Rebuilding with web target for local testing..."
+echo "Rebuilding pkg/ with web target for local www testing..."
 wasm-pack build --target web
 echo "Done. pkg/ now contains web target for www/ testing."
