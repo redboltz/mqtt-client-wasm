@@ -9,6 +9,8 @@ Cargo.lock
 .github/
 tarpaulin-report.html
 check.sh
+publish_npm.sh
+start_web_server.sh
 
 # Node.js test files (not needed for users)
 nodejs/test/
