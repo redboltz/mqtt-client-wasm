@@ -1306,6 +1306,124 @@ async fn test_v50_publish() {
     let packet = recv_result.unwrap().unwrap();
     if let mqtt::packet::Packet::V5_0Publish(pub_packet) = packet {
         assert_eq!(pub_packet.topic_name(), "test/v50/topic");
+        // topic_name_extracted should be false since topic name was provided directly
+        // (not extracted from topic alias mapping)
+        assert!(!pub_packet.topic_name_extracted());
+    } else {
+        panic!("Expected v5.0 PUBLISH packet");
+    }
+}
+
+/// Test topic_name_extracted flag for v5.0 PUBLISH packet with topic alias
+/// When a PUBLISH packet is received with empty topic name and topic alias,
+/// the library restores the topic name and sets topic_name_extracted to true
+#[tokio::test]
+async fn test_v50_publish_topic_name_extracted() {
+    use mqtt_protocol_core::mqtt::packet::Property;
+
+    let config = MqttConfig {
+        version: client_mqtt::Version::V5_0,
+        ..Default::default()
+    };
+    let mock_ws = MockUnderlyingLayer::new();
+    let event_sender = mock_ws.event_sender.clone();
+
+    let client = MqttClient::new_with_websocket(config, mock_ws);
+
+    let _ = client.connect("ws://test.example.com").await;
+    tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+
+    // First establish MQTT v5.0 connection
+    // Send CONNECT with TopicAliasMaximum to indicate we can handle topic aliases
+    let topic_alias_max = mqtt::packet::TopicAliasMaximum::new(10).unwrap();
+    let connect_props =
+        mqtt::packet::Properties::from(vec![Property::TopicAliasMaximum(topic_alias_max)]);
+    let connect_packet = mqtt::packet::v5_0::Connect::builder()
+        .client_id("topic-alias-test")
+        .unwrap()
+        .keep_alive(60)
+        .clean_start(true)
+        .props(connect_props)
+        .build()
+        .unwrap();
+    let _ = client
+        .send(mqtt::packet::Packet::V5_0Connect(connect_packet))
+        .await;
+
+    // Simulate CONNACK from broker
+    let connack = mqtt::packet::v5_0::Connack::builder()
+        .session_present(false)
+        .reason_code(client_mqtt::result_code::ConnectReasonCode::Success)
+        .build()
+        .unwrap();
+    let connack_bytes = mqtt::packet::Packet::V5_0Connack(connack).to_continuous_buffer();
+    let _ = event_sender.unbounded_send(mqtt_client_wasm::UnderlyingLayerEvent::Message(
+        connack_bytes,
+    ));
+
+    // Receive CONNACK
+    let recv_result =
+        tokio::time::timeout(tokio::time::Duration::from_millis(500), client.recv()).await;
+    assert!(recv_result.is_ok());
+
+    // Now simulate broker sending a PUBLISH with topic name and topic alias to register the mapping
+    let topic_alias_prop = mqtt::packet::TopicAlias::new(1).unwrap();
+    let props = mqtt::packet::Properties::from(vec![Property::TopicAlias(topic_alias_prop)]);
+    let publish_with_alias = mqtt::packet::v5_0::Publish::builder()
+        .topic_name("test/alias/topic")
+        .unwrap()
+        .qos(mqtt::packet::Qos::AtMostOnce)
+        .props(props)
+        .payload(b"first message")
+        .build()
+        .unwrap();
+    let publish_bytes =
+        mqtt::packet::Packet::V5_0Publish(publish_with_alias).to_continuous_buffer();
+    let _ = event_sender.unbounded_send(mqtt_client_wasm::UnderlyingLayerEvent::Message(
+        publish_bytes,
+    ));
+
+    // Receive first PUBLISH packet (topic alias registered)
+    let recv_result =
+        tokio::time::timeout(tokio::time::Duration::from_millis(500), client.recv()).await;
+    assert!(recv_result.is_ok());
+    let packet = recv_result.unwrap().unwrap();
+    if let mqtt::packet::Packet::V5_0Publish(pub_packet) = packet {
+        assert_eq!(pub_packet.topic_name(), "test/alias/topic");
+        // First packet has topic name provided, so extracted should be false
+        assert!(!pub_packet.topic_name_extracted());
+    } else {
+        panic!("Expected v5.0 PUBLISH packet");
+    }
+
+    // Now simulate broker sending a PUBLISH with empty topic name but with topic alias
+    // The library should restore the topic name from the alias mapping
+    let topic_alias_prop2 = mqtt::packet::TopicAlias::new(1).unwrap();
+    let props2 = mqtt::packet::Properties::from(vec![Property::TopicAlias(topic_alias_prop2)]);
+    let publish_alias_only = mqtt::packet::v5_0::Publish::builder()
+        .topic_name("")
+        .unwrap()
+        .qos(mqtt::packet::Qos::AtMostOnce)
+        .props(props2)
+        .payload(b"second message")
+        .build()
+        .unwrap();
+    let publish_bytes =
+        mqtt::packet::Packet::V5_0Publish(publish_alias_only).to_continuous_buffer();
+    let _ = event_sender.unbounded_send(mqtt_client_wasm::UnderlyingLayerEvent::Message(
+        publish_bytes,
+    ));
+
+    // Receive second packet (topic name should be extracted from alias)
+    let recv_result =
+        tokio::time::timeout(tokio::time::Duration::from_millis(500), client.recv()).await;
+    assert!(recv_result.is_ok());
+    let packet = recv_result.unwrap().unwrap();
+    if let mqtt::packet::Packet::V5_0Publish(pub_packet) = packet {
+        // Topic name should be restored from alias mapping
+        assert_eq!(pub_packet.topic_name(), "test/alias/topic");
+        // topic_name_extracted should be true since it was restored from alias
+        assert!(pub_packet.topic_name_extracted());
     } else {
         panic!("Expected v5.0 PUBLISH packet");
     }
@@ -1624,4 +1742,415 @@ async fn test_pingresp_recv_timeout() {
     // The PingrespRecv timeout should have fired
     // Note: mqtt-protocol-core may close the connection or emit an error on timeout
     // The test verifies the code path is exercised
+}
+
+/// Test subscription_identifiers accessor for v5.0 PUBLISH packet
+/// Subscription identifiers are set by the broker to indicate which subscriptions matched
+#[tokio::test]
+async fn test_v50_publish_subscription_identifiers() {
+    use mqtt_protocol_core::mqtt::packet::Property;
+
+    let config = MqttConfig {
+        version: client_mqtt::Version::V5_0,
+        ..Default::default()
+    };
+    let mock_ws = MockUnderlyingLayer::new();
+    let event_sender = mock_ws.event_sender.clone();
+
+    let client = MqttClient::new_with_websocket(config, mock_ws);
+
+    let _ = client.connect("ws://test.example.com").await;
+    tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+
+    // Establish MQTT v5.0 connection
+    let connect_packet = mqtt::packet::v5_0::Connect::builder()
+        .client_id("sub-id-test")
+        .unwrap()
+        .keep_alive(60)
+        .clean_start(true)
+        .build()
+        .unwrap();
+    let _ = client
+        .send(mqtt::packet::Packet::V5_0Connect(connect_packet))
+        .await;
+
+    // Simulate CONNACK from broker
+    let connack = mqtt::packet::v5_0::Connack::builder()
+        .session_present(false)
+        .reason_code(client_mqtt::result_code::ConnectReasonCode::Success)
+        .build()
+        .unwrap();
+    let connack_bytes = mqtt::packet::Packet::V5_0Connack(connack).to_continuous_buffer();
+    let _ = event_sender.unbounded_send(mqtt_client_wasm::UnderlyingLayerEvent::Message(
+        connack_bytes,
+    ));
+
+    // Receive CONNACK
+    let _ = tokio::time::timeout(tokio::time::Duration::from_millis(500), client.recv()).await;
+
+    // Simulate broker sending PUBLISH with multiple subscription identifiers
+    // This happens when a message matches multiple subscriptions
+    let sub_id1 = mqtt::packet::SubscriptionIdentifier::new(100).unwrap();
+    let sub_id2 = mqtt::packet::SubscriptionIdentifier::new(200).unwrap();
+    let props = mqtt::packet::Properties::from(vec![
+        Property::SubscriptionIdentifier(sub_id1),
+        Property::SubscriptionIdentifier(sub_id2),
+    ]);
+    let publish = mqtt::packet::v5_0::Publish::builder()
+        .topic_name("test/sub-id")
+        .unwrap()
+        .qos(mqtt::packet::Qos::AtMostOnce)
+        .props(props)
+        .payload(b"message with sub ids")
+        .build()
+        .unwrap();
+    let publish_bytes = mqtt::packet::Packet::V5_0Publish(publish).to_continuous_buffer();
+    let _ = event_sender.unbounded_send(mqtt_client_wasm::UnderlyingLayerEvent::Message(
+        publish_bytes,
+    ));
+
+    // Receive PUBLISH and check subscription identifiers
+    let recv_result =
+        tokio::time::timeout(tokio::time::Duration::from_millis(500), client.recv()).await;
+    assert!(recv_result.is_ok());
+    let packet = recv_result.unwrap().unwrap();
+    if let mqtt::packet::Packet::V5_0Publish(pub_packet) = packet {
+        assert_eq!(pub_packet.topic_name(), "test/sub-id");
+        // Check subscription identifiers by iterating through properties
+        let mut sub_ids: Vec<u32> = Vec::new();
+        for prop in pub_packet.props.iter() {
+            if let Property::SubscriptionIdentifier(p) = prop {
+                sub_ids.push(p.val());
+            }
+        }
+        assert_eq!(sub_ids.len(), 2);
+        assert!(sub_ids.contains(&100));
+        assert!(sub_ids.contains(&200));
+    } else {
+        panic!("Expected v5.0 PUBLISH packet");
+    }
+}
+
+/// Test user_properties accessor for v5.0 PUBLISH packet
+#[tokio::test]
+async fn test_v50_publish_user_properties() {
+    use mqtt_protocol_core::mqtt::packet::Property;
+
+    let config = MqttConfig {
+        version: client_mqtt::Version::V5_0,
+        ..Default::default()
+    };
+    let mock_ws = MockUnderlyingLayer::new();
+    let event_sender = mock_ws.event_sender.clone();
+
+    let client = MqttClient::new_with_websocket(config, mock_ws);
+
+    let _ = client.connect("ws://test.example.com").await;
+    tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+
+    // Establish MQTT v5.0 connection
+    let connect_packet = mqtt::packet::v5_0::Connect::builder()
+        .client_id("user-prop-test")
+        .unwrap()
+        .keep_alive(60)
+        .clean_start(true)
+        .build()
+        .unwrap();
+    let _ = client
+        .send(mqtt::packet::Packet::V5_0Connect(connect_packet))
+        .await;
+
+    // Simulate CONNACK from broker
+    let connack = mqtt::packet::v5_0::Connack::builder()
+        .session_present(false)
+        .reason_code(client_mqtt::result_code::ConnectReasonCode::Success)
+        .build()
+        .unwrap();
+    let connack_bytes = mqtt::packet::Packet::V5_0Connack(connack).to_continuous_buffer();
+    let _ = event_sender.unbounded_send(mqtt_client_wasm::UnderlyingLayerEvent::Message(
+        connack_bytes,
+    ));
+
+    // Receive CONNACK
+    let _ = tokio::time::timeout(tokio::time::Duration::from_millis(500), client.recv()).await;
+
+    // Simulate broker sending PUBLISH with user properties
+    let user_prop1 = mqtt::packet::UserProperty::new("source", "sensor-1").unwrap();
+    let user_prop2 = mqtt::packet::UserProperty::new("unit", "celsius").unwrap();
+    let user_prop3 = mqtt::packet::UserProperty::new("location", "room-42").unwrap();
+    let props = mqtt::packet::Properties::from(vec![
+        Property::UserProperty(user_prop1),
+        Property::UserProperty(user_prop2),
+        Property::UserProperty(user_prop3),
+    ]);
+    let publish = mqtt::packet::v5_0::Publish::builder()
+        .topic_name("test/user-props")
+        .unwrap()
+        .qos(mqtt::packet::Qos::AtMostOnce)
+        .props(props)
+        .payload(b"25.5")
+        .build()
+        .unwrap();
+    let publish_bytes = mqtt::packet::Packet::V5_0Publish(publish).to_continuous_buffer();
+    let _ = event_sender.unbounded_send(mqtt_client_wasm::UnderlyingLayerEvent::Message(
+        publish_bytes,
+    ));
+
+    // Receive PUBLISH and check user properties
+    let recv_result =
+        tokio::time::timeout(tokio::time::Duration::from_millis(500), client.recv()).await;
+    assert!(recv_result.is_ok());
+    let packet = recv_result.unwrap().unwrap();
+    if let mqtt::packet::Packet::V5_0Publish(pub_packet) = packet {
+        assert_eq!(pub_packet.topic_name(), "test/user-props");
+        // Check user properties by iterating through properties
+        let mut user_props: Vec<(String, String)> = Vec::new();
+        for prop in pub_packet.props.iter() {
+            if let Property::UserProperty(p) = prop {
+                user_props.push((p.key().to_string(), p.val().to_string()));
+            }
+        }
+        assert_eq!(user_props.len(), 3);
+        assert!(user_props.contains(&("source".to_string(), "sensor-1".to_string())));
+        assert!(user_props.contains(&("unit".to_string(), "celsius".to_string())));
+        assert!(user_props.contains(&("location".to_string(), "room-42".to_string())));
+    } else {
+        panic!("Expected v5.0 PUBLISH packet");
+    }
+}
+
+/// Test user_properties accessor for v5.0 CONNACK packet
+#[tokio::test]
+async fn test_v50_connack_user_properties() {
+    use mqtt_protocol_core::mqtt::packet::Property;
+
+    let config = MqttConfig {
+        version: client_mqtt::Version::V5_0,
+        ..Default::default()
+    };
+    let mock_ws = MockUnderlyingLayer::new();
+    let event_sender = mock_ws.event_sender.clone();
+
+    let client = MqttClient::new_with_websocket(config, mock_ws);
+
+    let _ = client.connect("ws://test.example.com").await;
+    tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+
+    // Send CONNECT
+    let connect_packet = mqtt::packet::v5_0::Connect::builder()
+        .client_id("connack-user-prop-test")
+        .unwrap()
+        .keep_alive(60)
+        .clean_start(true)
+        .build()
+        .unwrap();
+    let _ = client
+        .send(mqtt::packet::Packet::V5_0Connect(connect_packet))
+        .await;
+
+    // Simulate CONNACK with user properties from broker
+    let user_prop1 = mqtt::packet::UserProperty::new("server-name", "mqtt-broker-1").unwrap();
+    let user_prop2 = mqtt::packet::UserProperty::new("version", "5.0").unwrap();
+    let connack_props = mqtt::packet::Properties::from(vec![
+        Property::UserProperty(user_prop1),
+        Property::UserProperty(user_prop2),
+    ]);
+    let connack = mqtt::packet::v5_0::Connack::builder()
+        .session_present(false)
+        .reason_code(client_mqtt::result_code::ConnectReasonCode::Success)
+        .props(connack_props)
+        .build()
+        .unwrap();
+    let connack_bytes = mqtt::packet::Packet::V5_0Connack(connack).to_continuous_buffer();
+    let _ = event_sender.unbounded_send(mqtt_client_wasm::UnderlyingLayerEvent::Message(
+        connack_bytes,
+    ));
+
+    // Receive CONNACK and check user properties
+    let recv_result =
+        tokio::time::timeout(tokio::time::Duration::from_millis(500), client.recv()).await;
+    assert!(recv_result.is_ok());
+    let packet = recv_result.unwrap().unwrap();
+    if let mqtt::packet::Packet::V5_0Connack(connack_packet) = packet {
+        assert!(
+            connack_packet.reason_code() == client_mqtt::result_code::ConnectReasonCode::Success
+        );
+        // Check user properties by iterating through properties
+        let mut user_props: Vec<(String, String)> = Vec::new();
+        for prop in connack_packet.props.iter() {
+            if let Property::UserProperty(p) = prop {
+                user_props.push((p.key().to_string(), p.val().to_string()));
+            }
+        }
+        assert_eq!(user_props.len(), 2);
+        assert!(user_props.contains(&("server-name".to_string(), "mqtt-broker-1".to_string())));
+        assert!(user_props.contains(&("version".to_string(), "5.0".to_string())));
+    } else {
+        panic!("Expected v5.0 CONNACK packet");
+    }
+}
+
+/// Test user_properties accessor for v5.0 SUBACK packet
+#[tokio::test]
+async fn test_v50_suback_user_properties() {
+    use mqtt_protocol_core::mqtt::packet::Property;
+
+    let config = MqttConfig {
+        version: client_mqtt::Version::V5_0,
+        ..Default::default()
+    };
+    let mock_ws = MockUnderlyingLayer::new();
+    let event_sender = mock_ws.event_sender.clone();
+
+    let client = MqttClient::new_with_websocket(config, mock_ws);
+
+    let _ = client.connect("ws://test.example.com").await;
+    tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+
+    // Establish connection
+    let connect_packet = mqtt::packet::v5_0::Connect::builder()
+        .client_id("suback-user-prop-test")
+        .unwrap()
+        .keep_alive(60)
+        .clean_start(true)
+        .build()
+        .unwrap();
+    let _ = client
+        .send(mqtt::packet::Packet::V5_0Connect(connect_packet))
+        .await;
+
+    let connack = mqtt::packet::v5_0::Connack::builder()
+        .session_present(false)
+        .reason_code(client_mqtt::result_code::ConnectReasonCode::Success)
+        .build()
+        .unwrap();
+    let connack_bytes = mqtt::packet::Packet::V5_0Connack(connack).to_continuous_buffer();
+    let _ = event_sender.unbounded_send(mqtt_client_wasm::UnderlyingLayerEvent::Message(
+        connack_bytes,
+    ));
+    let _ = tokio::time::timeout(tokio::time::Duration::from_millis(500), client.recv()).await;
+
+    // Send SUBSCRIBE first (SUBACK can only be received in response to SUBSCRIBE)
+    let packet_id = client.acquire_packet_id().await.unwrap();
+    let sub_opts = mqtt::packet::SubOpts::new().set_qos(mqtt::packet::Qos::AtLeastOnce);
+    let sub_entry = mqtt::packet::SubEntry::new("test/topic", sub_opts).unwrap();
+    let subscribe_packet = mqtt::packet::v5_0::Subscribe::builder()
+        .packet_id(packet_id)
+        .entries(vec![sub_entry])
+        .build()
+        .unwrap();
+    let _ = client
+        .send(mqtt::packet::Packet::V5_0Subscribe(subscribe_packet))
+        .await;
+
+    // Simulate SUBACK with user properties from broker
+    let user_prop = mqtt::packet::UserProperty::new("info", "subscription-accepted").unwrap();
+    let suback_props = mqtt::packet::Properties::from(vec![Property::UserProperty(user_prop)]);
+    let suback = mqtt::packet::v5_0::Suback::builder()
+        .packet_id(packet_id)
+        .reason_codes(vec![
+            client_mqtt::result_code::SubackReasonCode::GrantedQos1,
+        ])
+        .props(suback_props)
+        .build()
+        .unwrap();
+    let suback_bytes = mqtt::packet::Packet::V5_0Suback(suback).to_continuous_buffer();
+    let _ = event_sender.unbounded_send(mqtt_client_wasm::UnderlyingLayerEvent::Message(
+        suback_bytes,
+    ));
+
+    // Receive SUBACK and check user properties
+    let recv_result =
+        tokio::time::timeout(tokio::time::Duration::from_millis(500), client.recv()).await;
+    assert!(recv_result.is_ok());
+    let packet = recv_result.unwrap().unwrap();
+    if let mqtt::packet::Packet::V5_0Suback(suback_packet) = packet {
+        assert_eq!(suback_packet.packet_id(), packet_id);
+        // Check user properties by iterating through properties
+        let mut user_props: Vec<(String, String)> = Vec::new();
+        for prop in suback_packet.props.iter() {
+            if let Property::UserProperty(p) = prop {
+                user_props.push((p.key().to_string(), p.val().to_string()));
+            }
+        }
+        assert_eq!(user_props.len(), 1);
+        assert!(user_props.contains(&("info".to_string(), "subscription-accepted".to_string())));
+    } else {
+        panic!("Expected v5.0 SUBACK packet");
+    }
+}
+
+/// Test user_properties accessor for v5.0 DISCONNECT packet
+#[tokio::test]
+async fn test_v50_disconnect_user_properties() {
+    use mqtt_protocol_core::mqtt::packet::Property;
+
+    let config = MqttConfig {
+        version: client_mqtt::Version::V5_0,
+        ..Default::default()
+    };
+    let mock_ws = MockUnderlyingLayer::new();
+    let event_sender = mock_ws.event_sender.clone();
+
+    let client = MqttClient::new_with_websocket(config, mock_ws);
+
+    let _ = client.connect("ws://test.example.com").await;
+    tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+
+    // Establish connection
+    let connect_packet = mqtt::packet::v5_0::Connect::builder()
+        .client_id("disconnect-user-prop-test")
+        .unwrap()
+        .keep_alive(60)
+        .clean_start(true)
+        .build()
+        .unwrap();
+    let _ = client
+        .send(mqtt::packet::Packet::V5_0Connect(connect_packet))
+        .await;
+
+    let connack = mqtt::packet::v5_0::Connack::builder()
+        .session_present(false)
+        .reason_code(client_mqtt::result_code::ConnectReasonCode::Success)
+        .build()
+        .unwrap();
+    let connack_bytes = mqtt::packet::Packet::V5_0Connack(connack).to_continuous_buffer();
+    let _ = event_sender.unbounded_send(mqtt_client_wasm::UnderlyingLayerEvent::Message(
+        connack_bytes,
+    ));
+    let _ = tokio::time::timeout(tokio::time::Duration::from_millis(500), client.recv()).await;
+
+    // Simulate DISCONNECT with user properties from broker
+    let user_prop = mqtt::packet::UserProperty::new("reason", "server-shutdown").unwrap();
+    let disconnect_props = mqtt::packet::Properties::from(vec![Property::UserProperty(user_prop)]);
+    let disconnect = mqtt::packet::v5_0::Disconnect::builder()
+        .reason_code(client_mqtt::result_code::DisconnectReasonCode::ServerShuttingDown)
+        .props(disconnect_props)
+        .build()
+        .unwrap();
+    let disconnect_bytes = mqtt::packet::Packet::V5_0Disconnect(disconnect).to_continuous_buffer();
+    let _ = event_sender.unbounded_send(mqtt_client_wasm::UnderlyingLayerEvent::Message(
+        disconnect_bytes,
+    ));
+
+    // Receive DISCONNECT and check user properties
+    let recv_result =
+        tokio::time::timeout(tokio::time::Duration::from_millis(500), client.recv()).await;
+    assert!(recv_result.is_ok());
+    let packet = recv_result.unwrap().unwrap();
+    if let mqtt::packet::Packet::V5_0Disconnect(disconnect_packet) = packet {
+        // Check user properties by iterating through properties
+        let mut user_props: Vec<(String, String)> = Vec::new();
+        if let Some(props) = &disconnect_packet.props {
+            for prop in props.iter() {
+                if let Property::UserProperty(p) = prop {
+                    user_props.push((p.key().to_string(), p.val().to_string()));
+                }
+            }
+        }
+        assert_eq!(user_props.len(), 1);
+        assert!(user_props.contains(&("reason".to_string(), "server-shutdown".to_string())));
+    } else {
+        panic!("Expected v5.0 DISCONNECT packet");
+    }
 }

@@ -551,6 +551,177 @@ while (true) {
 
 ---
 
+## Received Packet Fields Reference
+
+When receiving packets via `client.recv()`, you can access fields using the `client.asXxx(packet)` methods. The following sections document all available fields for each packet type.
+
+### Received CONNACK
+
+```javascript
+const connack = client.asConnack(packet);
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `sessionPresent` | boolean | Whether a session from a previous connection exists |
+| `returnCode` (v3.1.1) | number | Connect return code |
+| `reasonCode` (v5.0) | number | Connect reason code |
+| `isSuccess()` | boolean | Returns true if connection was accepted |
+
+#### CONNACK Properties (v5.0 only)
+
+| Property | Type | Description |
+|----------|------|-------------|
+| `sessionExpiryInterval` | number? | Session expiry interval from server |
+| `receiveMaximum` | number? | Maximum concurrent QoS 1/2 receives |
+| `maximumQos` | number? | Maximum QoS level supported by server |
+| `retainAvailable` | boolean? | Whether retain is available |
+| `maximumPacketSize` | number? | Maximum packet size |
+| `assignedClientIdentifier` | string? | Client ID assigned by server |
+| `topicAliasMaximum` | number? | Maximum topic aliases |
+| `reasonString` | string? | Human-readable reason |
+| `wildcardSubscriptionAvailable` | boolean? | Whether wildcard subscriptions are available |
+| `subscriptionIdentifiersAvailable` | boolean? | Whether subscription identifiers are available |
+| `sharedSubscriptionAvailable` | boolean? | Whether shared subscriptions are available |
+| `serverKeepAlive` | number? | Server-specified keep alive |
+| `responseInformation` | string? | Response information |
+| `serverReference` | string? | Server reference for redirect |
+| `authenticationMethod` | string? | Authentication method |
+| `authenticationData` | Uint8Array? | Authentication data |
+| `userProperties()` | Array | User properties `[{key, value}, ...]` |
+
+---
+
+### Received PUBLISH
+
+```javascript
+const pub = client.asPublish(packet);
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `topicName` | string | Topic name |
+| `payload` | string? | Payload as UTF-8 string (null if not valid UTF-8) |
+| `payloadBytes()` | Uint8Array | Payload as byte array |
+| `qos` | number | QoS level (0, 1, 2) |
+| `retain` | boolean | Retain flag |
+| `dup` | boolean | Duplicate flag |
+| `packetId` | number? | Packet identifier (for QoS > 0) |
+
+#### PUBLISH Properties (v5.0 only)
+
+| Property | Type | Description |
+|----------|------|-------------|
+| `payloadFormatIndicator` | number? | 0=binary, 1=UTF-8 |
+| `messageExpiryInterval` | number? | Message expiry in seconds |
+| `topicAlias` | number? | Topic alias used |
+| `responseTopic` | string? | Response topic for request/response |
+| `correlationData` | Uint8Array? | Correlation data |
+| `contentType` | string? | Content type (MIME type) |
+| `subscriptionIdentifiers()` | number[] | Subscription identifiers matching this message |
+| `userProperties()` | Array | User properties `[{key, value}, ...]` |
+| `topicNameExtracted` | boolean | True if topic name was restored from topic alias mapping |
+
+**Note:** `topicNameExtracted` indicates that the received PUBLISH packet had an empty topic name with a topic alias, and the library automatically restored the topic name from the alias mapping.
+
+---
+
+### Received SUBACK
+
+```javascript
+const suback = client.asSuback(packet);
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `packetId` | number | Packet identifier |
+| `returnCodes()` (v3.1.1) | number[] | Return codes for each subscription |
+| `reasonCodes()` (v5.0) | number[] | Reason codes for each subscription |
+
+#### SUBACK Properties (v5.0 only)
+
+| Property | Type | Description |
+|----------|------|-------------|
+| `reasonString` | string? | Human-readable reason |
+| `userProperties()` | Array | User properties `[{key, value}, ...]` |
+
+---
+
+### Received UNSUBACK
+
+```javascript
+const unsuback = client.asUnsuback(packet);
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `packetId` | number | Packet identifier |
+| `reasonCodes()` (v5.0) | number[] | Reason codes for each topic |
+
+#### UNSUBACK Properties (v5.0 only)
+
+| Property | Type | Description |
+|----------|------|-------------|
+| `reasonString` | string? | Human-readable reason |
+| `userProperties()` | Array | User properties `[{key, value}, ...]` |
+
+---
+
+### Received PUBACK/PUBREC/PUBREL/PUBCOMP
+
+```javascript
+const puback = client.asPuback(packet);
+const pubrec = client.asPubrec(packet);
+const pubrel = client.asPubrel(packet);
+const pubcomp = client.asPubcomp(packet);
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `packetId` | number | Packet identifier |
+| `reasonCode` (v5.0) | number | Reason code |
+
+#### QoS Response Properties (v5.0 only)
+
+| Property | Type | Description |
+|----------|------|-------------|
+| `reasonString` | string? | Human-readable reason |
+| `userProperties()` | Array | User properties `[{key, value}, ...]` |
+
+---
+
+### Received DISCONNECT (v5.0 only)
+
+```javascript
+const disconnect = client.asDisconnect(packet);
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `reasonCode` | number | Disconnect reason code |
+| `sessionExpiryInterval` | number? | Session expiry interval |
+| `reasonString` | string? | Human-readable reason |
+| `serverReference` | string? | Server reference for redirect |
+| `userProperties()` | Array | User properties `[{key, value}, ...]` |
+
+---
+
+### Received AUTH (v5.0 only)
+
+```javascript
+const auth = client.asAuth(packet);
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `reasonCode` | number | Auth reason code |
+| `authenticationMethod` | string? | Authentication method |
+| `authenticationData` | Uint8Array? | Authentication data |
+| `reasonString` | string? | Human-readable reason |
+| `userProperties()` | Array | User properties `[{key, value}, ...]` |
+
+---
+
 ## Browser Demo Tools
 
 ### 1. Build WASM Package
