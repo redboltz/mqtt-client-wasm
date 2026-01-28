@@ -26,6 +26,79 @@ MQTT client library compiled to WebAssembly, supporting both browsers and Node.j
 - **Auto Response Options**: Configurable automatic handling of PUBACK, PUBREC, PUBREL, PUBCOMP, and PINGRESP
 - **Interactive Client Tool**: Ready-to-use HTML client for testing and debugging (browser)
 
+### Protocol State Machine Details
+
+#### MQTT v3.1.1
+
+**Sending CONNECT Packet:**
+- If `keepAlive` is set to a value greater than 0, automatic PINGREQ transmission is enabled. A PINGREQ packet is sent when no other packet has been transmitted within `keepAlive` seconds.
+- If `cleanSession` is set to `true`, the endpoint's Session State is cleared.
+
+**Receiving CONNACK Packet:**
+- If `sessionPresent` is `false`, the endpoint's Session State is cleared. However, the session state configuration is retained, so subsequent PUBLISH packets with QoS 1 or QoS 2 will be stored.
+- If `sessionPresent` is `true`, any stored PUBLISH and PUBREL packets are retransmitted.
+
+#### MQTT v5.0
+
+**Sending CONNECT Packet:**
+- If `cleanStart` is set to `true`, the endpoint's Session State is cleared.
+- If `topicAliasMaximum` is set, a topic name to topic alias mapping is prepared for outgoing packets.
+- If `receiveMaximum` is set, the receive quota for incoming packets is configured.
+- If `maximumPacketSize` is set, the maximum packet size for incoming packets is configured.
+- If `sessionExpiryInterval` is set to a value greater than 0, session state persistence is enabled.
+
+**Receiving CONNACK Packet:**
+- If `sessionPresent` is `false`, the endpoint's Session State is cleared. However, the session state configuration is retained, so subsequent PUBLISH packets with QoS 1 or QoS 2 will be stored.
+- If `sessionPresent` is `true`, any stored PUBLISH and PUBREL packets are retransmitted.
+- If `topicAliasMaximum` is set, a topic alias to topic name mapping is prepared for incoming packets.
+- If `receiveMaximum` is set, the send quota for outgoing packets is configured.
+- If `maximumPacketSize` is set, the maximum packet size for outgoing packets is configured.
+- If `serverKeepAlive` is set, it overrides the client's `keepAlive` value. A PINGREQ packet is sent when no other packet has been transmitted within `serverKeepAlive` seconds.
+
+#### Topic Alias
+
+Topic Alias is an MQTT v5.0 feature that reduces PUBLISH packet size by mapping topic names to numeric identifiers. The mapping operates independently in two directions: broker-to-client and client-to-broker.
+
+**Capacity Negotiation:**
+- **Client to Broker:** The broker declares a `topicAliasMaximum` value in the CONNACK packet, allowing the client to use topic aliases up to that limit when sending PUBLISH packets.
+- **Broker to Client:** The client declares a `topicAliasMaximum` value in the CONNECT packet, allowing the broker to use topic aliases up to that limit when sending PUBLISH packets.
+
+**How Topic Alias Works:**
+
+1. **Registering a mapping:** A PUBLISH packet containing both a topic name and a `topicAlias` property establishes the mapping. If the alias was already mapped to a different topic, the mapping is updated.
+
+2. **Using a mapping:** A PUBLISH packet with an empty topic name and a `topicAlias` property signals the receiver to look up the topic name from the established mapping. This reduces packet size, especially for long topic names.
+
+**Automatic Topic Alias Handling:**
+
+The client provides two configuration options to automate topic alias management:
+
+- `autoMapTopicAliasSend: true` - Automatically assigns topic aliases when sending PUBLISH packets. When all available aliases are in use, the least recently used mapping is replaced.
+
+- `autoReplaceTopicAliasSend: true` - Automatically uses existing mappings when sending PUBLISH packets. If a topic name already has an alias registered, the client sends an empty topic name with the alias instead.
+
+These options can be used together for fully automatic topic alias management.
+
+**Receiving PUBLISH with Topic Alias:**
+
+When the client receives a PUBLISH packet with an empty topic name and a topic alias, the library automatically restores the topic name from the mapping. You can check whether the topic name was restored by reading the `topicNameExtracted` property:
+
+```javascript
+const pub = client.asPublish(packet);
+console.log(`Topic: ${pub.topicName}`);
+if (pub.topicNameExtracted) {
+    console.log('(topic name was restored from alias mapping)');
+}
+```
+
+**Important: Topic Alias and Reconnection**
+
+According to the MQTT specification, topic alias mappings are **not** part of Session State. This means all mappings are discarded when the connection closes. However, Session State (which includes unacknowledged QoS 1/2 PUBLISH packets) can persist across connections.
+
+This creates a potential issue: if a QoS 1 or QoS 2 PUBLISH packet was sent with an empty topic name (using a topic alias), and the client reconnects before receiving acknowledgment, the stored packet cannot be resent as-is because the alias mapping no longer exists.
+
+**The library handles this automatically:** When retransmitting stored packets after reconnection, the library reconstructs each packet with the original topic name and removes the topic alias property. This ensures protocol compliance without requiring any user intervention.
+
 ---
 
 ## Installation
