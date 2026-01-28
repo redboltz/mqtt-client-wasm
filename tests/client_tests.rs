@@ -1306,6 +1306,124 @@ async fn test_v50_publish() {
     let packet = recv_result.unwrap().unwrap();
     if let mqtt::packet::Packet::V5_0Publish(pub_packet) = packet {
         assert_eq!(pub_packet.topic_name(), "test/v50/topic");
+        // topic_name_extracted should be false since topic name was provided directly
+        // (not extracted from topic alias mapping)
+        assert!(!pub_packet.topic_name_extracted());
+    } else {
+        panic!("Expected v5.0 PUBLISH packet");
+    }
+}
+
+/// Test topic_name_extracted flag for v5.0 PUBLISH packet with topic alias
+/// When a PUBLISH packet is received with empty topic name and topic alias,
+/// the library restores the topic name and sets topic_name_extracted to true
+#[tokio::test]
+async fn test_v50_publish_topic_name_extracted() {
+    use mqtt_protocol_core::mqtt::packet::Property;
+
+    let config = MqttConfig {
+        version: client_mqtt::Version::V5_0,
+        ..Default::default()
+    };
+    let mock_ws = MockUnderlyingLayer::new();
+    let event_sender = mock_ws.event_sender.clone();
+
+    let client = MqttClient::new_with_websocket(config, mock_ws);
+
+    let _ = client.connect("ws://test.example.com").await;
+    tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+
+    // First establish MQTT v5.0 connection
+    // Send CONNECT with TopicAliasMaximum to indicate we can handle topic aliases
+    let topic_alias_max = mqtt::packet::TopicAliasMaximum::new(10).unwrap();
+    let connect_props =
+        mqtt::packet::Properties::from(vec![Property::TopicAliasMaximum(topic_alias_max)]);
+    let connect_packet = mqtt::packet::v5_0::Connect::builder()
+        .client_id("topic-alias-test")
+        .unwrap()
+        .keep_alive(60)
+        .clean_start(true)
+        .props(connect_props)
+        .build()
+        .unwrap();
+    let _ = client
+        .send(mqtt::packet::Packet::V5_0Connect(connect_packet))
+        .await;
+
+    // Simulate CONNACK from broker
+    let connack = mqtt::packet::v5_0::Connack::builder()
+        .session_present(false)
+        .reason_code(client_mqtt::result_code::ConnectReasonCode::Success)
+        .build()
+        .unwrap();
+    let connack_bytes = mqtt::packet::Packet::V5_0Connack(connack).to_continuous_buffer();
+    let _ = event_sender.unbounded_send(mqtt_client_wasm::UnderlyingLayerEvent::Message(
+        connack_bytes,
+    ));
+
+    // Receive CONNACK
+    let recv_result =
+        tokio::time::timeout(tokio::time::Duration::from_millis(500), client.recv()).await;
+    assert!(recv_result.is_ok());
+
+    // Now simulate broker sending a PUBLISH with topic name and topic alias to register the mapping
+    let topic_alias_prop = mqtt::packet::TopicAlias::new(1).unwrap();
+    let props = mqtt::packet::Properties::from(vec![Property::TopicAlias(topic_alias_prop)]);
+    let publish_with_alias = mqtt::packet::v5_0::Publish::builder()
+        .topic_name("test/alias/topic")
+        .unwrap()
+        .qos(mqtt::packet::Qos::AtMostOnce)
+        .props(props)
+        .payload(b"first message")
+        .build()
+        .unwrap();
+    let publish_bytes =
+        mqtt::packet::Packet::V5_0Publish(publish_with_alias).to_continuous_buffer();
+    let _ = event_sender.unbounded_send(mqtt_client_wasm::UnderlyingLayerEvent::Message(
+        publish_bytes,
+    ));
+
+    // Receive first PUBLISH packet (topic alias registered)
+    let recv_result =
+        tokio::time::timeout(tokio::time::Duration::from_millis(500), client.recv()).await;
+    assert!(recv_result.is_ok());
+    let packet = recv_result.unwrap().unwrap();
+    if let mqtt::packet::Packet::V5_0Publish(pub_packet) = packet {
+        assert_eq!(pub_packet.topic_name(), "test/alias/topic");
+        // First packet has topic name provided, so extracted should be false
+        assert!(!pub_packet.topic_name_extracted());
+    } else {
+        panic!("Expected v5.0 PUBLISH packet");
+    }
+
+    // Now simulate broker sending a PUBLISH with empty topic name but with topic alias
+    // The library should restore the topic name from the alias mapping
+    let topic_alias_prop2 = mqtt::packet::TopicAlias::new(1).unwrap();
+    let props2 = mqtt::packet::Properties::from(vec![Property::TopicAlias(topic_alias_prop2)]);
+    let publish_alias_only = mqtt::packet::v5_0::Publish::builder()
+        .topic_name("")
+        .unwrap()
+        .qos(mqtt::packet::Qos::AtMostOnce)
+        .props(props2)
+        .payload(b"second message")
+        .build()
+        .unwrap();
+    let publish_bytes =
+        mqtt::packet::Packet::V5_0Publish(publish_alias_only).to_continuous_buffer();
+    let _ = event_sender.unbounded_send(mqtt_client_wasm::UnderlyingLayerEvent::Message(
+        publish_bytes,
+    ));
+
+    // Receive second packet (topic name should be extracted from alias)
+    let recv_result =
+        tokio::time::timeout(tokio::time::Duration::from_millis(500), client.recv()).await;
+    assert!(recv_result.is_ok());
+    let packet = recv_result.unwrap().unwrap();
+    if let mqtt::packet::Packet::V5_0Publish(pub_packet) = packet {
+        // Topic name should be restored from alias mapping
+        assert_eq!(pub_packet.topic_name(), "test/alias/topic");
+        // topic_name_extracted should be true since it was restored from alias
+        assert!(pub_packet.topic_name_extracted());
     } else {
         panic!("Expected v5.0 PUBLISH packet");
     }

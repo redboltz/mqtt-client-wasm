@@ -816,6 +816,14 @@ impl WasmPublishPacketV5_0 {
     pub fn content_type(&self) -> Option<String> {
         self.inner.props.content_type()
     }
+
+    /// Returns true if the topic name was extracted from topic alias mapping.
+    /// When a PUBLISH packet is received with an empty topic name and a topic alias,
+    /// the library restores the topic name from the alias mapping and sets this flag to true.
+    #[wasm_bindgen(getter, js_name = topicNameExtracted)]
+    pub fn topic_name_extracted(&self) -> bool {
+        self.inner.topic_name_extracted()
+    }
 }
 
 /// WASM wrapper for V5.0 CONNACK packet
