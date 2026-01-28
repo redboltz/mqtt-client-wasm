@@ -1,6 +1,6 @@
 [package]
 name = "mqtt-client-wasm"
-version = "0.2.1"
+version = "0.2.2"
 edition = "2021"
 rust-version = "1.87.0"
 description = "MQTT v3.1.1/v5.0 client for browsers using WebSocket (ws/wss) transport, compiled to WebAssembly"
@@ -11,6 +11,15 @@ documentation = "https://github.com/redboltz/mqtt-client-wasm#readme"
 keywords = ["mqtt", "wasm", "websocket", "browser", "iot"]
 categories = ["wasm", "web-programming", "network-programming"]
 readme = "README.md"
+exclude = [
+    "pkg/",
+    "pkg-bundler/",
+    "pkg-web/",
+    "pkg-nodejs/",
+    "www/",
+    "nodejs/",
+    ".github/",
+]
 
 [lib]
 crate-type = ["cdylib", "rlib"]

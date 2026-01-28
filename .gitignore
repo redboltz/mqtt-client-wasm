@@ -58,4 +58,6 @@ package-lock.json
 
 # Generated WASM packages (created by wasm-pack build)
 pkg/
+pkg-bundler/
+pkg-web/
 pkg-nodejs/
