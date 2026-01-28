@@ -247,6 +247,8 @@ pub trait PropertiesExt {
     fn response_topic(&self) -> Option<String>;
     fn correlation_data(&self) -> Option<Vec<u8>>;
     fn content_type(&self) -> Option<String>;
+    fn subscription_identifiers(&self) -> Vec<u32>;
+    fn user_properties(&self) -> Vec<(String, String)>;
     fn session_expiry_interval(&self) -> Option<u32>;
     fn receive_maximum(&self) -> Option<u16>;
     fn maximum_qos(&self) -> Option<u8>;
@@ -318,6 +320,26 @@ impl PropertiesExt for Properties {
             }
         }
         None
+    }
+
+    fn subscription_identifiers(&self) -> Vec<u32> {
+        let mut result = Vec::new();
+        for prop in self.iter() {
+            if let Property::SubscriptionIdentifier(p) = prop {
+                result.push(p.val());
+            }
+        }
+        result
+    }
+
+    fn user_properties(&self) -> Vec<(String, String)> {
+        let mut result = Vec::new();
+        for prop in self.iter() {
+            if let Property::UserProperty(p) = prop {
+                result.push((p.key().to_string(), p.val().to_string()));
+            }
+        }
+        result
     }
 
     fn session_expiry_interval(&self) -> Option<u32> {
@@ -488,6 +510,18 @@ impl PropertiesExt for Option<Properties> {
 
     fn content_type(&self) -> Option<String> {
         self.as_ref().and_then(|p| p.content_type())
+    }
+
+    fn subscription_identifiers(&self) -> Vec<u32> {
+        self.as_ref()
+            .map(|p| p.subscription_identifiers())
+            .unwrap_or_default()
+    }
+
+    fn user_properties(&self) -> Vec<(String, String)> {
+        self.as_ref()
+            .map(|p| p.user_properties())
+            .unwrap_or_default()
     }
 
     fn session_expiry_interval(&self) -> Option<u32> {
@@ -816,6 +850,37 @@ impl WasmPublishPacketV5_0 {
     pub fn content_type(&self) -> Option<String> {
         self.inner.props.content_type()
     }
+
+    /// Returns the subscription identifiers from the PUBLISH packet.
+    /// These are set by the broker to indicate which subscriptions matched the message.
+    /// Multiple subscription identifiers can be present if the message matches multiple subscriptions.
+    #[wasm_bindgen(js_name = subscriptionIdentifiers)]
+    pub fn subscription_identifiers(&self) -> Vec<u32> {
+        self.inner.props.subscription_identifiers()
+    }
+
+    /// Returns the user properties from the PUBLISH packet.
+    /// Returns an array of {key, value} objects.
+    #[wasm_bindgen(js_name = userProperties)]
+    pub fn user_properties(&self) -> JsValue {
+        let props = self.inner.props.user_properties();
+        let arr = js_sys::Array::new();
+        for (key, value) in props {
+            let obj = js_sys::Object::new();
+            js_sys::Reflect::set(&obj, &"key".into(), &key.into()).unwrap();
+            js_sys::Reflect::set(&obj, &"value".into(), &value.into()).unwrap();
+            arr.push(&obj);
+        }
+        arr.into()
+    }
+
+    /// Returns true if the topic name was extracted from topic alias mapping.
+    /// When a PUBLISH packet is received with an empty topic name and a topic alias,
+    /// the library restores the topic name from the alias mapping and sets this flag to true.
+    #[wasm_bindgen(getter, js_name = topicNameExtracted)]
+    pub fn topic_name_extracted(&self) -> bool {
+        self.inner.topic_name_extracted()
+    }
 }
 
 /// WASM wrapper for V5.0 CONNACK packet
@@ -930,6 +995,21 @@ impl WasmConnackPacketV5_0 {
     pub fn authentication_data(&self) -> Option<Vec<u8>> {
         self.inner.props.authentication_data().map(|s| s.to_vec())
     }
+
+    /// Returns the user properties from the CONNACK packet.
+    /// Returns an array of {key, value} objects.
+    #[wasm_bindgen(js_name = userProperties)]
+    pub fn user_properties(&self) -> JsValue {
+        let props = self.inner.props.user_properties();
+        let arr = js_sys::Array::new();
+        for (key, value) in props {
+            let obj = js_sys::Object::new();
+            js_sys::Reflect::set(&obj, &"key".into(), &key.into()).unwrap();
+            js_sys::Reflect::set(&obj, &"value".into(), &value.into()).unwrap();
+            arr.push(&obj);
+        }
+        arr.into()
+    }
 }
 
 /// WASM wrapper for V5.0 SUBACK packet
@@ -953,6 +1033,21 @@ impl WasmSubackPacketV5_0 {
     #[wasm_bindgen(getter, js_name = reasonString)]
     pub fn reason_string(&self) -> Option<String> {
         self.inner.props.reason_string().map(|s| s.to_string())
+    }
+
+    /// Returns the user properties from the SUBACK packet.
+    /// Returns an array of {key, value} objects.
+    #[wasm_bindgen(js_name = userProperties)]
+    pub fn user_properties(&self) -> JsValue {
+        let props = self.inner.props.user_properties();
+        let arr = js_sys::Array::new();
+        for (key, value) in props {
+            let obj = js_sys::Object::new();
+            js_sys::Reflect::set(&obj, &"key".into(), &key.into()).unwrap();
+            js_sys::Reflect::set(&obj, &"value".into(), &value.into()).unwrap();
+            arr.push(&obj);
+        }
+        arr.into()
     }
 }
 
@@ -978,6 +1073,21 @@ impl WasmUnsubackPacketV5_0 {
     pub fn reason_string(&self) -> Option<String> {
         self.inner.props.reason_string().map(|s| s.to_string())
     }
+
+    /// Returns the user properties from the UNSUBACK packet.
+    /// Returns an array of {key, value} objects.
+    #[wasm_bindgen(js_name = userProperties)]
+    pub fn user_properties(&self) -> JsValue {
+        let props = self.inner.props.user_properties();
+        let arr = js_sys::Array::new();
+        for (key, value) in props {
+            let obj = js_sys::Object::new();
+            js_sys::Reflect::set(&obj, &"key".into(), &key.into()).unwrap();
+            js_sys::Reflect::set(&obj, &"value".into(), &value.into()).unwrap();
+            arr.push(&obj);
+        }
+        arr.into()
+    }
 }
 
 /// WASM wrapper for V5.0 PUBACK packet
@@ -1001,6 +1111,21 @@ impl WasmPubackPacketV5_0 {
     #[wasm_bindgen(getter, js_name = reasonString)]
     pub fn reason_string(&self) -> Option<String> {
         self.inner.props.reason_string().map(|s| s.to_string())
+    }
+
+    /// Returns the user properties from the PUBACK packet.
+    /// Returns an array of {key, value} objects.
+    #[wasm_bindgen(js_name = userProperties)]
+    pub fn user_properties(&self) -> JsValue {
+        let props = self.inner.props.user_properties();
+        let arr = js_sys::Array::new();
+        for (key, value) in props {
+            let obj = js_sys::Object::new();
+            js_sys::Reflect::set(&obj, &"key".into(), &key.into()).unwrap();
+            js_sys::Reflect::set(&obj, &"value".into(), &value.into()).unwrap();
+            arr.push(&obj);
+        }
+        arr.into()
     }
 }
 
@@ -1026,6 +1151,21 @@ impl WasmPubrecPacketV5_0 {
     pub fn reason_string(&self) -> Option<String> {
         self.inner.props.reason_string().map(|s| s.to_string())
     }
+
+    /// Returns the user properties from the PUBREC packet.
+    /// Returns an array of {key, value} objects.
+    #[wasm_bindgen(js_name = userProperties)]
+    pub fn user_properties(&self) -> JsValue {
+        let props = self.inner.props.user_properties();
+        let arr = js_sys::Array::new();
+        for (key, value) in props {
+            let obj = js_sys::Object::new();
+            js_sys::Reflect::set(&obj, &"key".into(), &key.into()).unwrap();
+            js_sys::Reflect::set(&obj, &"value".into(), &value.into()).unwrap();
+            arr.push(&obj);
+        }
+        arr.into()
+    }
 }
 
 /// WASM wrapper for V5.0 PUBREL packet
@@ -1050,6 +1190,21 @@ impl WasmPubrelPacketV5_0 {
     pub fn reason_string(&self) -> Option<String> {
         self.inner.props.reason_string().map(|s| s.to_string())
     }
+
+    /// Returns the user properties from the PUBREL packet.
+    /// Returns an array of {key, value} objects.
+    #[wasm_bindgen(js_name = userProperties)]
+    pub fn user_properties(&self) -> JsValue {
+        let props = self.inner.props.user_properties();
+        let arr = js_sys::Array::new();
+        for (key, value) in props {
+            let obj = js_sys::Object::new();
+            js_sys::Reflect::set(&obj, &"key".into(), &key.into()).unwrap();
+            js_sys::Reflect::set(&obj, &"value".into(), &value.into()).unwrap();
+            arr.push(&obj);
+        }
+        arr.into()
+    }
 }
 
 /// WASM wrapper for V5.0 PUBCOMP packet
@@ -1073,6 +1228,21 @@ impl WasmPubcompPacketV5_0 {
     #[wasm_bindgen(getter, js_name = reasonString)]
     pub fn reason_string(&self) -> Option<String> {
         self.inner.props.reason_string().map(|s| s.to_string())
+    }
+
+    /// Returns the user properties from the PUBCOMP packet.
+    /// Returns an array of {key, value} objects.
+    #[wasm_bindgen(js_name = userProperties)]
+    pub fn user_properties(&self) -> JsValue {
+        let props = self.inner.props.user_properties();
+        let arr = js_sys::Array::new();
+        for (key, value) in props {
+            let obj = js_sys::Object::new();
+            js_sys::Reflect::set(&obj, &"key".into(), &key.into()).unwrap();
+            js_sys::Reflect::set(&obj, &"value".into(), &value.into()).unwrap();
+            arr.push(&obj);
+        }
+        arr.into()
     }
 }
 
@@ -1102,6 +1272,21 @@ impl WasmDisconnectPacketV5_0 {
     #[wasm_bindgen(getter, js_name = serverReference)]
     pub fn server_reference(&self) -> Option<String> {
         self.inner.props.server_reference().map(|s| s.to_string())
+    }
+
+    /// Returns the user properties from the DISCONNECT packet.
+    /// Returns an array of {key, value} objects.
+    #[wasm_bindgen(js_name = userProperties)]
+    pub fn user_properties(&self) -> JsValue {
+        let props = self.inner.props.user_properties();
+        let arr = js_sys::Array::new();
+        for (key, value) in props {
+            let obj = js_sys::Object::new();
+            js_sys::Reflect::set(&obj, &"key".into(), &key.into()).unwrap();
+            js_sys::Reflect::set(&obj, &"value".into(), &value.into()).unwrap();
+            arr.push(&obj);
+        }
+        arr.into()
     }
 }
 
@@ -1134,6 +1319,21 @@ impl WasmAuthPacketV5_0 {
     #[wasm_bindgen(getter, js_name = reasonString)]
     pub fn reason_string(&self) -> Option<String> {
         self.inner.props.reason_string().map(|s| s.to_string())
+    }
+
+    /// Returns the user properties from the AUTH packet.
+    /// Returns an array of {key, value} objects.
+    #[wasm_bindgen(js_name = userProperties)]
+    pub fn user_properties(&self) -> JsValue {
+        let props = self.inner.props.user_properties();
+        let arr = js_sys::Array::new();
+        for (key, value) in props {
+            let obj = js_sys::Object::new();
+            js_sys::Reflect::set(&obj, &"key".into(), &key.into()).unwrap();
+            js_sys::Reflect::set(&obj, &"value".into(), &value.into()).unwrap();
+            arr.push(&obj);
+        }
+        arr.into()
     }
 }
 
