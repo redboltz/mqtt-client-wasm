@@ -30,5 +30,12 @@ else
     echo "Publishing to npm..."
     cd pkg
     npm publish --access public
+    cd ..
     echo "Published successfully!"
 fi
+
+# Rebuild with web target for local www testing
+echo ""
+echo "Rebuilding with web target for local testing..."
+wasm-pack build --target web
+echo "Done. pkg/ now contains web target for www/ testing."
