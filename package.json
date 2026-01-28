@@ -1,6 +1,6 @@
 {
-  "name": "mqtt-client-wasm",
-  "version": "0.1.0",
+  "name": "@redboltz/mqtt-client-wasm",
+  "version": "0.2.0",
   "description": "MQTT v3.1.1/v5.0 client for browsers and Node.js using WebSocket/TCP/TLS transport, compiled to WebAssembly",
   "license": "MIT",
   "author": "Takatoshi Kondo",
